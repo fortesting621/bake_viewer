@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bake Viewer</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: Segoe UI, Roboto, sans-serif; }
+  #app { display: flex; height: 100%; }
+  #view { flex: 1; position: relative; background: #1b1d21; }
+  #view canvas { display: block; }
+  #panel {
+    width: 340px; background: #23262b; border-left: 1px solid #33373d;
+    padding: 16px; overflow-y: auto; flex-shrink: 0;
+  }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  .sub { font-size: 12px; color: #8b929c; margin-bottom: 16px; }
+  .ctrl { margin-bottom: 14px; }
+  .ctrl:last-child { margin-bottom: 0; }
+  .ctrl label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 6px; }
+  .ctrl .val { color: #6fb3ff; font-variant-numeric: tabular-nums; }
+  .ctrl[data-tip] { cursor: help; }
+  .ctrl.tight { margin-bottom: 10px; }
+  input[type=range] { width: 100%; }
+  select {
+    width: 100%; background: #1b1d21; color: #e6e8ea; border: 1px solid #3a3f46;
+    border-radius: 5px; padding: 6px; font-size: 13px;
+  }
+  button {
+    width: 100%; padding: 11px; border: 0; border-radius: 6px; cursor: pointer;
+    background: #2f7fd8; color: #fff; font-size: 14px; font-weight: 600;
+  }
+  button:disabled { background: #3a4149; color: #8b929c; cursor: default; }
+  button.secondary { background: #3a4149; color: #d7dbe0; font-size: 13px; padding: 9px; }
+  .btn-row { display: flex; gap: 8px; }
+  #status { font-size: 12px; margin-top: 10px; color: #8b929c; white-space: pre-wrap; }
+  #log { font-size: 10px; color: #6b727c; margin-top: 10px; max-height: 140px; overflow: auto; white-space: pre-wrap; }
+
+  .box {
+    border: 1px solid #33373d; border-radius: 8px;
+    margin-bottom: 14px; background: #1e2126; overflow: hidden;
+  }
+  .box > summary {
+    list-style: none; cursor: pointer; user-select: none;
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 14px; font-size: 12px; color: #a7aeb8;
+    text-transform: uppercase; letter-spacing: .4px;
+  }
+  .box > summary::-webkit-details-marker { display: none; }
+  .box > summary::before {
+    content: '▸'; font-size: 11px; color: #6b727c;
+    transition: transform .15s ease;
+  }
+  .box[open] > summary::before { transform: rotate(90deg); }
+  .box > summary:hover { color: #e6e8ea; }
+  .box[open] > summary { border-bottom: 1px solid #2b2f35; }
+  .box-body { padding: 14px; }
+
+  .file {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    font-size: 13px; margin-bottom: 8px; cursor: pointer;
+  }
+  .file:last-child { margin-bottom: 0; }
+  .file span { flex-shrink: 0; }
+  .file input[type=file] { display: none; }
+  .file .pick {
+    flex: 1; min-width: 0; text-align: right; color: #6fb3ff;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    border-bottom: 1px dashed #3a3f46; padding: 3px 0;
+  }
+  .file .pick.empty { color: #6b727c; }
+
+  .toggle {
+    display: flex; align-items: center; gap: 9px;
+    font-size: 13px; cursor: pointer; margin-bottom: 14px;
+  }
+  .toggle input[type=checkbox] {
+    width: 16px; height: 16px; accent-color: #2f7fd8; cursor: pointer;
+  }
+
+  input[type=range].hue {
+    -webkit-appearance: none; appearance: none;
+    height: 12px; border-radius: 6px; border: 1px solid #3a3f46;
+    background: linear-gradient(to right,
+      hsl(0,70%,55%), hsl(60,70%,55%), hsl(120,70%,55%),
+      hsl(180,70%,55%), hsl(240,70%,55%), hsl(300,70%,55%), hsl(360,70%,55%));
+  }
+  input[type=range].hue::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%;
+    background: #fff; border: 2px solid #23262b; cursor: pointer;
+    box-shadow: 0 0 0 1px #0006;
+  }
+  input[type=range].hue::-moz-range-thumb {
+    width: 16px; height: 16px; border-radius: 50%;
+    background: #fff; border: 2px solid #23262b; cursor: pointer;
+  }
+
+  #preview { border: 1px solid #33373d; border-radius: 6px; overflow: hidden; }
+  #previewCanvas {
+    display: block; width: 100%; height: auto; cursor: zoom-in;
+    background: #111317;
+  }
+  #preview .cap { font-size: 11px; color: #8b929c; padding: 5px 8px; background: #1b1d21; }
+
+  #lightbox {
+    position: fixed; inset: 0; z-index: 1000;
+    display: none; align-items: center; justify-content: center;
+    background: rgba(0,0,0,.8); cursor: zoom-out;
+  }
+  #lightbox.open { display: flex; }
+  #lightbox img {
+    max-width: 80vw; max-height: 80vh; width: auto; height: auto;
+    border: 1px solid #3a3f46; border-radius: 8px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.6);
+    background: #111317;
+  }
+  #lightbox .close {
+    position: absolute; top: 16px; right: 22px;
+    font-size: 30px; line-height: 1; color: #cfd4da; cursor: pointer;
+  }
+
+  #tooltip {
+    position: fixed; max-width: 340px; z-index: 999;
+    background: #111317; color: #d7dbe0;
+    border: 1px solid #3a3f46; border-radius: 7px;
+    padding: 10px 12px; font-size: 12px; line-height: 1.5;
+    box-shadow: 0 8px 24px rgba(0,0,0,.5);
+    opacity: 0; visibility: hidden; transition: opacity .12s ease;
+    pointer-events: none;
+  }
+  #tooltip.show { opacity: 1; visibility: visible; }
+  #tooltip b { color: #fff; }
+  #tooltip em { color: #6fb3ff; font-style: normal; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="view"></div>
+  <div id="panel">
+    <h1>Перепечка base color</h1>
+    <div class="sub">high → low (Selected to Active)</div>
+
+    <details class="box" open>
+      <summary>Импорт и действия</summary>
+      <div class="box-body">
+        <label class="file">
+          <span>Low poly</span>
+          <span class="pick empty" id="lowName">выбрать…</span>
+          <input type="file" id="fileLow" accept=".fbx,.obj,.glb,.gltf,.stl">
+        </label>
+        <label class="file">
+          <span>High poly</span>
+          <span class="pick empty" id="highName">выбрать…</span>
+          <input type="file" id="fileHigh" accept=".fbx,.obj,.glb,.gltf,.stl">
+        </label>
+        <label class="file">
+          <span>Base color</span>
+          <span class="pick empty" id="texName">авто из high</span>
+          <input type="file" id="fileTex" accept="image/*">
+        </label>
+
+        <button id="bake" style="margin-top:14px">Перепечь</button>
+        <div class="btn-row" style="margin-top:8px">
+          <button id="adjSave" class="secondary">Сохранить PNG</button>
+          <button id="adjDownload" class="secondary">Скачать PNG</button>
+        </div>
+        <div id="status"></div>
+        <div id="log"></div>
+      </div>
+    </details>
+
+    <details class="box" open>
+      <summary>Параметры бейка</summary>
+      <div class="box-body">
+        <div class="ctrl" data-tip="<b>Отступ кейджа.</b> На сколько копия low&#8209;poly «раздувается» наружу вдоль нормалей — оттуда стартуют лучи и идут внутрь к high&#8209;poly.<br><em>Мало</em> → лучи не достают, чёрные точки/пятна.<br><em>Много</em> → луч задевает соседние детали, смаз и размазанные края.<br>Для <b>максимально совпадающих</b> мешей подобрано <b>0.008</b> (диапазон 0.001–0.02).">
+          <label>cage_extrusion <span class="val" id="cage_v">0.008</span></label>
+          <input type="range" id="cage" min="0" max="0.02" step="0.0005" value="0.008">
+        </div>
+
+        <div class="ctrl" data-tip="<b>Дальность луча.</b> Как далеко луч летит от кейджа, прежде чем считается промахом.<br>Должна быть <b>не меньше</b> cage_extrusion, лучше с запасом.<br>Для совпадающих мешей подобрано <b>0.012</b> (при cage_extrusion 0.008).<br><em>Мало</em> → чёрные пропуски. <em>Слишком много</em> → луч цепляет далёкую/чужую геометрию.">
+          <label>max_ray_distance <span class="val" id="ray_v">0.012</span></label>
+          <input type="range" id="ray" min="0" max="0.05" step="0.0005" value="0.012">
+        </div>
+
+        <div class="ctrl" data-tip="<b>Отступ краёв (padding).</b> Сколько пикселей цвета «расплывается» за границы UV&#8209;островов.<br>Рекомендации по разрешению:<br>&nbsp;• 512 → <b>2–4 px</b><br>&nbsp;• 1024 (1K) → <b>4–8 px</b><br>&nbsp;• 2048 (2K) → <b>8–16 px</b><br>&nbsp;• 4096 (4K) → <b>16–32 px</b><br><em>0</em> → швы и чёрные кромки при уменьшении текстуры (мипмапы).<br>Смена разрешения автоматически ставит рекомендуемый padding.">
+          <label>margin / padding (px) <span class="val" id="margin_v">32</span></label>
+          <input type="range" id="margin" min="0" max="64" step="4" value="32">
+        </div>
+
+        <div class="ctrl" data-tip="<b>Разрешение выходной текстуры.</b> Сторона квадрата в пикселях.<br><em>Больше</em> → детальнее, но крупнее файл и дольше сохранение.<br>Обычно берут исходное разрешение текстуры high&#8209;poly (<b>4096</b>).">
+          <label>resolution</label>
+          <select id="resolution">
+            <option value="1024">1024</option>
+            <option value="2048">2048</option>
+            <option value="4096" selected>4096</option>
+          </select>
+        </div>
+      </div>
+    </details>
+
+    <details class="box" open>
+      <summary>Отображение</summary>
+      <div class="box-body">
+        <label class="toggle">
+          <input type="checkbox" id="sceneGridToggle" checked>
+          <span>Опорная сетка</span>
+        </label>
+        <div class="ctrl tight" data-tip="<b>Цвет опорной сетки.</b> Веди ползунок слева направо — цвет плавно меняется по всему спектру (оттенок 0–360°).">
+          <label>цвет опорной сетки <span class="val" id="sceneGridColor_v">210</span></label>
+          <input type="range" id="sceneGridColor" class="hue" min="0" max="360" step="1" value="210">
+        </div>
+
+        <label class="toggle">
+          <input type="checkbox" id="wireToggle">
+          <span>Каркас меша</span>
+        </label>
+        <div class="ctrl tight" data-tip="<b>Цвет каркаса.</b> Показывает рёбра сетки (mesh) модели. Ползунок плавно меняет цвет по спектру (оттенок 0–360°).">
+          <label>цвет каркаса <span class="val" id="wireColor_v">210</span></label>
+          <input type="range" id="wireColor" class="hue" min="0" max="360" step="1" value="210">
+        </div>
+      </div>
+    </details>
+
+    <details class="box" open>
+      <summary>Цветокоррекция base color</summary>
+      <div class="box-body">
+        <div class="ctrl tight" data-tip="<b>Яркость.</b> Прибавляет/убавляет значение ко всем каналам (−1…+1).">
+          <label>яркость <span class="val" id="adjBrightness_v">0.00</span></label>
+          <input type="range" id="adjBrightness" min="-1" max="1" step="0.01" value="0">
+        </div>
+        <div class="ctrl tight" data-tip="<b>Контраст.</b> Растягивает/сжимает тона вокруг середины (−1…+1).">
+          <label>контраст <span class="val" id="adjContrast_v">0.00</span></label>
+          <input type="range" id="adjContrast" min="-1" max="1" step="0.01" value="0">
+        </div>
+        <div class="ctrl tight" data-tip="<b>Насыщенность.</b> 0 — ч/б, 1 — исходная, 2 — вдвое насыщеннее.">
+          <label>насыщенность <span class="val" id="adjSaturation_v">1.00</span></label>
+          <input type="range" id="adjSaturation" min="0" max="2" step="0.01" value="1">
+        </div>
+        <div class="ctrl tight" data-tip="<b>Оттенок (Hue).</b> Сдвигает цвет по кругу, −180°…+180°.">
+          <label>hue <span class="val" id="adjHue_v">0</span></label>
+          <input type="range" id="adjHue" min="-180" max="180" step="1" value="0">
+        </div>
+        <div class="ctrl tight" data-tip="<b>Vibrance.</b> Мягкая насыщенность: усиливает слабые цвета, не пережигая уже насыщенные (−1…+1).">
+          <label>vibrance <span class="val" id="adjVibrance_v">0.00</span></label>
+          <input type="range" id="adjVibrance" min="-1" max="1" step="0.01" value="0">
+        </div>
+        <div class="ctrl tight" data-tip="<b>Экспозиция.</b> Умножает яркость как стопы: +1 ≈ ×2, −1 ≈ ×0.5 (−2…+2).">
+          <label>экспозиция <span class="val" id="adjExposure_v">0.00</span></label>
+          <input type="range" id="adjExposure" min="-2" max="2" step="0.01" value="0">
+        </div>
+        <div class="ctrl tight" data-tip="<b>Гамма.</b> Коррекция средних тонов: &lt;1 темнее, &gt;1 светлее (0.2…3).">
+          <label>гамма <span class="val" id="adjGamma_v">1.00</span></label>
+          <input type="range" id="adjGamma" min="0.2" max="3" step="0.01" value="1">
+        </div>
+        <div class="ctrl tight" data-tip="<b>Температура.</b> Теплее (жёлтый) / холоднее (синий), −1…+1.">
+          <label>температура <span class="val" id="adjTemperature_v">0.00</span></label>
+          <input type="range" id="adjTemperature" min="-1" max="1" step="0.01" value="0">
+        </div>
+        <div class="ctrl tight" data-tip="<b>Тон (Tint).</b> Зелёный / пурпурный баланс, −1…+1.">
+          <label>тон <span class="val" id="adjTint_v">0.00</span></label>
+          <input type="range" id="adjTint" min="-1" max="1" step="0.01" value="0">
+        </div>
+        <div class="ctrl tight" data-tip="<b>Уровни — чёрная точка.</b> Всё темнее этого значения обрезается в чёрный (0…0.6).">
+          <label>уровни: чёрная <span class="val" id="adjLevelsBlack_v">0.000</span></label>
+          <input type="range" id="adjLevelsBlack" min="0" max="0.6" step="0.005" value="0">
+        </div>
+        <div class="ctrl tight" data-tip="<b>Уровни — белая точка.</b> Всё ярче этого значения обрезается в белый (0.4…1).">
+          <label>уровни: белая <span class="val" id="adjLevelsWhite_v">1.000</span></label>
+          <input type="range" id="adjLevelsWhite" min="0.4" max="1" step="0.005" value="1">
+        </div>
+        <div class="ctrl tight" data-tip="<b>Резкость (Sharpen).</b> Усиление контуров (unsharp mask), 0 — выкл., 2 — сильно.">
+          <label>резкость <span class="val" id="adjSharpen_v">0.00</span></label>
+          <input type="range" id="adjSharpen" min="0" max="2" step="0.01" value="0">
+        </div>
+
+        <div class="btn-row">
+          <button id="adjReset" class="secondary">Сброс</button>
+        </div>
+      </div>
+    </details>
+
+    <details class="box" open>
+      <summary>Base color</summary>
+      <div class="box-body">
+        <div id="preview">
+          <canvas id="previewCanvas"></canvas>
+          <div class="cap">текущая base color · клик — увеличить</div>
+        </div>
+      </div>
+    </details>
+  </div>
+</div>
+
+<div id="tooltip"></div>
+<div id="lightbox"><span class="close">&times;</span><img id="lightboxImg" alt="texture"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "./three.module.js",
+    "three/addons/": "./jsm/"
+  }
+}
+</script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

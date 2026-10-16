@@ -1,0 +1,8 @@
+# крупные и генерируемые артефакты
+uploads/
+bake_scene.blend
+web/model.glb
+
+# Python
+__pycache__/
+*.py[cod]
