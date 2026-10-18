@@ -59,6 +59,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def guess_type(self, path):
+        t = super().guess_type(path)
+        if t.startswith("text/") or t in ("application/javascript", "application/json"):
+            t += "; charset=utf-8"
+        return t
+
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        super().end_headers()
+
     def do_GET(self):
         path = self.path.split("?")[0]
         if path == "/texture.png":
@@ -162,7 +174,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def reply(self, code, obj):
         data = json.dumps(obj).encode("utf-8")
         self.send_response(code)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)

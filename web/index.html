@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="utf-8">
@@ -140,7 +140,7 @@
   <div id="view"></div>
   <div id="panel">
     <h1>Перепечка base color</h1>
-    <div class="sub">high → low (Selected to Active)</div>
+    <div class="sub">high → low (Selected to Active) · <span id="appVer"></span></div>
 
     <details class="box" open>
       <summary>Импорт и действия</summary>
@@ -174,6 +174,19 @@
     <details class="box" open>
       <summary>Параметры бейка</summary>
       <div class="box-body">
+        <label class="toggle">
+          <input type="checkbox" id="cageToggle">
+          <span>Кейдж (cage)</span>
+        </label>
+        <div class="ctrl tight" data-tip="<b>Непрозрачность кейджа.</b> 100% — кейдж плотный, модель под ним не видна. 0% — кейдж полностью невидим.<br>Кейдж — это low&#8209;poly, «раздутый» наружу вдоль нормалей на величину <b>cage_extrusion</b>: от его поверхности стартуют лучи бейка.<br>Меняй ползунок cage_extrusion выше — кейдж обновляется мгновенно.">
+          <label>непрозрачность кейджа <span class="val" id="cageOpacity_v">25%</span></label>
+          <input type="range" id="cageOpacity" min="0" max="100" step="1" value="25">
+        </div>
+        <div class="ctrl tight" data-tip="<b>Цвет кейджа.</b> Цвет полупрозрачной оболочки по спектру (оттенок 0–360°). По умолчанию оранжевый, как в Substance Painter.">
+          <label>цвет кейджа <span class="val" id="cageColor_v">30</span></label>
+          <input type="range" id="cageColor" class="hue" min="0" max="360" step="1" value="30">
+        </div>
+
         <div class="ctrl" data-tip="<b>Отступ кейджа.</b> На сколько копия low&#8209;poly «раздувается» наружу вдоль нормалей — оттуда стартуют лучи и идут внутрь к high&#8209;poly.<br><em>Мало</em> → лучи не достают, чёрные точки/пятна.<br><em>Много</em> → луч задевает соседние детали, смаз и размазанные края.<br>Для <b>максимально совпадающих</b> мешей подобрано <b>0.008</b> (диапазон 0.001–0.02).">
           <label>cage_extrusion <span class="val" id="cage_v">0.008</span></label>
           <input type="range" id="cage" min="0" max="0.02" step="0.0005" value="0.008">
@@ -186,7 +199,7 @@
 
         <div class="ctrl" data-tip="<b>Отступ краёв (padding).</b> Сколько пикселей цвета «расплывается» за границы UV&#8209;островов.<br>Рекомендации по разрешению:<br>&nbsp;• 512 → <b>2–4 px</b><br>&nbsp;• 1024 (1K) → <b>4–8 px</b><br>&nbsp;• 2048 (2K) → <b>8–16 px</b><br>&nbsp;• 4096 (4K) → <b>16–32 px</b><br><em>0</em> → швы и чёрные кромки при уменьшении текстуры (мипмапы).<br>Смена разрешения автоматически ставит рекомендуемый padding.">
           <label>margin / padding (px) <span class="val" id="margin_v">32</span></label>
-          <input type="range" id="margin" min="0" max="64" step="4" value="32">
+          <input type="range" id="margin" min="0" max="64" step="2" value="32">
         </div>
 
         <div class="ctrl" data-tip="<b>Разрешение выходной текстуры.</b> Сторона квадрата в пикселях.<br><em>Больше</em> → детальнее, но крупнее файл и дольше сохранение.<br>Обычно берут исходное разрешение текстуры high&#8209;poly (<b>4096</b>).">
@@ -304,6 +317,6 @@
   }
 }
 </script>
-<script type="module" src="./app.js"></script>
+<script type="module" src="./app.js?v=20261018g"></script>
 </body>
 </html>

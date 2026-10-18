@@ -1,8 +1,11 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const view = document.getElementById('view');
+const appVerEl = document.getElementById('appVer');
+if (appVerEl) appVerEl.textContent = 'v20261018g';
 
 window.addEventListener('error', (e) => {
   const st = document.getElementById('status');
@@ -62,6 +65,82 @@ function buildWires(root) {
       wires.push(w);
     }
   });
+}
+
+// --- Cage preview (Substance Painter style) ---
+const cageMaterial = new THREE.MeshBasicMaterial({
+  color: 0xff8800,
+  transparent: true,
+  opacity: 0.25,
+  depthWrite: false,
+  depthTest: true,
+  side: THREE.DoubleSide,
+  polygonOffset: true,
+  polygonOffsetFactor: -1,
+  polygonOffsetUnits: -1,
+});
+let cageOn = false;
+
+function cageExtrusion() {
+  const el = document.getElementById('cage');
+  return el ? parseFloat(el.value) : 0;
+}
+
+function clearCage(root) {
+  if (!root) return;
+  const remove = [];
+  root.traverse((o) => {
+    if (o.name === '__cage__') remove.push(o);
+  });
+  for (const o of remove) {
+    if (o.geometry) o.geometry.dispose();
+    if (o.parent) o.parent.remove(o);
+  }
+}
+
+function buildCage(root, extrusion) {
+  clearCage(root);
+  if (!root || !(extrusion > 0)) return;
+  root.updateWorldMatrix(true, true);
+  const meshes = [];
+  root.traverse((o) => {
+    if (o.isMesh && o.name !== '__cage__' && o.geometry && o.geometry.attributes.position) {
+      meshes.push(o);
+    }
+  });
+  for (const mesh of meshes) {
+    let geo = mesh.geometry.clone();
+    // keep only position so mergeVertices welds split verts (same pos, diff normal/uv)
+    for (const name of Object.keys(geo.attributes)) {
+      if (name !== 'position') geo.deleteAttribute(name);
+    }
+    geo = mergeVertices(geo, 1e-4);
+    geo.computeVertexNormals();
+    const pos = geo.attributes.position;
+    const norm = geo.attributes.normal;
+    if (!norm) { geo.dispose(); continue; }
+    const ws = new THREE.Vector3();
+    mesh.getWorldScale(ws);
+    const avg = (Math.abs(ws.x) + Math.abs(ws.y) + Math.abs(ws.z)) / 3 || 1;
+    const e = extrusion / avg;
+    for (let i = 0; i < pos.count; i++) {
+      pos.setXYZ(i,
+        pos.getX(i) + norm.getX(i) * e,
+        pos.getY(i) + norm.getY(i) * e,
+        pos.getZ(i) + norm.getZ(i) * e);
+    }
+    pos.needsUpdate = true;
+    geo.computeBoundingSphere();
+    const cage = new THREE.Mesh(geo, cageMaterial);
+    cage.name = '__cage__';
+    cage.visible = cageOn;
+    cage.renderOrder = 1;
+    mesh.add(cage);
+  }
+}
+
+function refreshCage() {
+  if (currentRoot) buildCage(currentRoot, cageExtrusion());
 }
 
 const loader = new GLTFLoader();
@@ -336,11 +415,13 @@ function loadModel() {
         scene.remove(currentRoot);
         wires.forEach((w) => w.geometry.dispose());
         wires = [];
+        clearCage(currentRoot);
         currentRoot.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });
       }
       currentRoot = root;
       scene.add(root);
       buildWires(root);
+      if (cageOn) buildCage(root, cageExtrusion());
       frameObject(root);
       resolve(meshCount);
     }, undefined, reject);
@@ -388,6 +469,9 @@ const els = {
   gridColor: document.getElementById('sceneGridColor'),
   wireToggle: document.getElementById('wireToggle'),
   wireColor: document.getElementById('wireColor'),
+  cageToggle: document.getElementById('cageToggle'),
+  cageOpacity: document.getElementById('cageOpacity'),
+  cageColor: document.getElementById('cageColor'),
   adjSave: document.getElementById('adjSave'),
   adjDownload: document.getElementById('adjDownload'),
   adjReset: document.getElementById('adjReset'),
@@ -470,6 +554,40 @@ wireOn = els.wireToggle.checked;
 wires.forEach((w) => { w.visible = wireOn; });
 setWireColor(parseFloat(els.wireColor.value));
 setLabel('wireColor_v', els.wireColor.value);
+
+// --- Cage controls ---
+function setCageColor(hue) {
+  cageMaterial.color.setHSL(hue / 360, 0.9, 0.55);
+}
+
+els.cageToggle.addEventListener('change', () => {
+  cageOn = els.cageToggle.checked;
+  if (cageOn) {
+    refreshCage();
+    const n = currentRoot ? currentRoot.getObjectsByProperty('name', '__cage__').length : 0;
+    els.status.textContent = n > 0
+      ? 'Кейдж включён: ' + n + ' оболочек, extrusion ' + cageExtrusion()
+      : 'Кейдж: нет мешей для отображения';
+  } else {
+    if (currentRoot) clearCage(currentRoot);
+    els.status.textContent = '';
+  }
+});
+els.cageOpacity.addEventListener('input', () => {
+  cageMaterial.opacity = parseFloat(els.cageOpacity.value) / 100;
+  setLabel('cageOpacity_v', els.cageOpacity.value + '%');
+});
+els.cageColor.addEventListener('input', () => {
+  setCageColor(parseFloat(els.cageColor.value));
+  setLabel('cageColor_v', els.cageColor.value);
+});
+els.cage.addEventListener('input', () => {
+  if (cageOn) refreshCage();
+});
+
+setCageColor(parseFloat(els.cageColor.value));
+setLabel('cageColor_v', els.cageColor.value);
+setLabel('cageOpacity_v', els.cageOpacity.value + '%');
 
 const ADJ = [
   ['adjBrightness', (v) => v.toFixed(2)],
