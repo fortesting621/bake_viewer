@@ -1,11 +1,12 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const view = document.getElementById('view');
 const appVerEl = document.getElementById('appVer');
-if (appVerEl) appVerEl.textContent = 'v20261018g';
+if (appVerEl) appVerEl.textContent = 'v20261019d';
 
 window.addEventListener('error', (e) => {
   const st = document.getElementById('status');
@@ -146,8 +147,18 @@ function refreshCage() {
 const loader = new GLTFLoader();
 let material = null;
 let currentRoot = null;
+let currentRoom = 'bake';
 let texVersion = Date.now();
 let modelVersion = Date.now();
+
+const animClock = new THREE.Clock(false);
+let rigMixer = null;
+let rigActions = [];
+let rigClips = [];
+let rigAction = null;
+let rigPlaying = false;
+let rigTotalFrames = 0;
+let rigFps = 24;
 
 const previewCanvas = document.getElementById('previewCanvas');
 const previewRenderer = new THREE.WebGLRenderer({
@@ -419,6 +430,7 @@ function loadModel() {
         currentRoot.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });
       }
       currentRoot = root;
+      root.visible = currentRoom === 'bake';
       scene.add(root);
       buildWires(root);
       if (cageOn) buildCage(root, cageExtrusion());
@@ -444,12 +456,6 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 resize();
-
-(function loop() {
-  requestAnimationFrame(loop);
-  controls.update();
-  renderer.render(scene, camera);
-})();
 
 const els = {
   cage: document.getElementById('cage'),
@@ -763,3 +769,362 @@ lightbox.addEventListener('click', () => lightbox.classList.remove('open'));
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') lightbox.classList.remove('open');
 });
+
+const rigGroup = new THREE.Group();
+rigGroup.visible = false;
+scene.add(rigGroup);
+
+const rigBoneMaterial = new THREE.MeshBasicMaterial({
+  color: 0xa6b0ba,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+});
+const rigBoneLineMaterial = new THREE.LineBasicMaterial({
+  color: 0x22262b,
+  depthWrite: false,
+});
+
+let rigRoot = null;
+const rigBoneObjs = [];
+let rigSkelOn = true;
+let rigInFront = true;
+
+const elsRig = {
+  file: document.getElementById('rigFile'),
+  name: document.getElementById('rigName'),
+  status: document.getElementById('rigStatus'),
+  log: document.getElementById('rigLog'),
+  skelToggle: document.getElementById('rigSkelToggle'),
+  inFrontToggle: document.getElementById('rigInFrontToggle'),
+  gridToggle: document.getElementById('rigGridToggle'),
+};
+
+function applyRigDepth() {
+  rigBoneMaterial.depthTest = !rigInFront;
+  rigBoneMaterial.needsUpdate = true;
+  rigBoneLineMaterial.depthTest = !rigInFront;
+  rigBoneLineMaterial.needsUpdate = true;
+}
+
+function setRigBonesVisible(v) {
+  for (const o of rigBoneObjs) o.visible = v;
+}
+
+function setGridVisible(v) {
+  sceneGridOn = v;
+  sceneGrid.visible = v;
+  els.gridToggle.checked = v;
+  elsRig.gridToggle.checked = v;
+}
+
+function makeBoneGeometry(t) {
+  const L = t.length();
+  const d = t.clone().divideScalar(L);
+  const tmp = Math.abs(d.y) < 0.99 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+  const u = new THREE.Vector3().crossVectors(tmp, d).normalize();
+  const v = new THREE.Vector3().crossVectors(d, u).normalize();
+  const r = L * 0.1;
+  const gp = d.clone().multiplyScalar(L * 0.3);
+  const verts = [
+    0, 0, 0,
+    t.x, t.y, t.z,
+    gp.x + u.x * r, gp.y + u.y * r, gp.z + u.z * r,
+    gp.x - u.x * r, gp.y - u.y * r, gp.z - u.z * r,
+    gp.x + v.x * r, gp.y + v.y * r, gp.z + v.z * r,
+    gp.x - v.x * r, gp.y - v.y * r, gp.z - v.z * r,
+  ];
+  const idx = [
+    0, 2, 3, 0, 3, 4, 0, 4, 5, 0, 5, 2,
+    1, 3, 2, 1, 4, 3, 1, 5, 4, 1, 2, 5,
+  ];
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  geo.setIndex(idx);
+  return geo;
+}
+
+function buildRigSkeleton(root) {
+  const boneSet = new Set();
+  root.traverse((o) => { if (o.isBone) boneSet.add(o); });
+  let segments = 0;
+  for (const bone of boneSet) {
+    const parent = bone.parent;
+    if (!parent || !boneSet.has(parent)) continue;
+    if (bone.position.length() < 1e-8) continue;
+    const geo = makeBoneGeometry(bone.position);
+    const mesh = new THREE.Mesh(geo, rigBoneMaterial);
+    const outline = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 1), rigBoneLineMaterial);
+    mesh.renderOrder = 1000;
+    outline.renderOrder = 1000;
+    mesh.visible = rigSkelOn;
+    outline.visible = rigSkelOn;
+    parent.add(mesh);
+    parent.add(outline);
+    rigBoneObjs.push(mesh, outline);
+    segments++;
+  }
+  return { bones: boneSet.size, segments };
+}
+
+function clearRig() {
+  teardownAnimations();
+  for (const o of rigBoneObjs) {
+    if (o.geometry) o.geometry.dispose();
+    if (o.parent) o.parent.remove(o);
+  }
+  rigBoneObjs.length = 0;
+  if (rigRoot) {
+    rigRoot.traverse((o) => {
+      if (o.geometry) o.geometry.dispose();
+    });
+    rigGroup.remove(rigRoot);
+    rigRoot = null;
+  }
+}
+
+const SRGB_COLOR_MAPS = ['map', 'emissiveMap', 'specularMap'];
+
+function fixTextureColorSpace(root) {
+  root.traverse((o) => {
+    const mats = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : [];
+    for (const m of mats) {
+      let changed = false;
+      for (const key of SRGB_COLOR_MAPS) {
+        const tex = m[key];
+        if (tex && tex.colorSpace !== THREE.SRGBColorSpace) {
+          tex.colorSpace = THREE.SRGBColorSpace;
+          tex.needsUpdate = true;
+          changed = true;
+        }
+      }
+      if (changed) m.needsUpdate = true;
+    }
+  });
+}
+
+const elsAnim = {
+  player: document.getElementById('rigPlayer'),
+  play: document.getElementById('rigPlay'),
+  frame: document.getElementById('rigFrame'),
+  timeline: document.getElementById('rigTimeline'),
+  clip: document.getElementById('rigClip'),
+  fpsSel: document.getElementById('rigFpsSel'),
+};
+
+function animDuration() {
+  return rigAction && rigAction.getClip ? rigAction.getClip().duration : 0;
+}
+
+function syncAnimUi() {
+  if (!rigAction) return;
+  const dur = animDuration() || 1;
+  const t = rigAction.time % dur;
+  const frame = Math.min(rigTotalFrames, Math.max(0, Math.round(t * rigFps)));
+  elsAnim.frame.textContent = frame + ' / ' + rigTotalFrames;
+  if (document.activeElement !== elsAnim.timeline) {
+    elsAnim.timeline.value = String(frame);
+  }
+}
+
+function setPlaying(v) {
+  if (!rigAction) return;
+  rigPlaying = v;
+  rigAction.paused = !v;
+  elsAnim.play.textContent = v ? '⏸' : '▶';
+  if (v) {
+    animClock.start();
+    animClock.getDelta();
+  } else {
+    animClock.stop();
+  }
+}
+
+function seekFrame(f) {
+  if (!rigAction || !rigMixer) return;
+  const dur = animDuration() || 1;
+  let t = f / rigFps;
+  if (t >= dur) t = Math.max(0, dur - 1 / rigFps);
+  rigAction.time = t;
+  rigMixer.update(0);
+  syncAnimUi();
+}
+
+function setupAnimations(root, clips) {
+  teardownAnimations();
+  if (!clips || !clips.length) return;
+  rigClips = clips;
+  rigMixer = new THREE.AnimationMixer(root);
+  rigActions = clips.map((c) => rigMixer.clipAction(c));
+  elsAnim.clip.innerHTML = '';
+  clips.forEach((c, i) => {
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    opt.textContent = c.name || ('Clip ' + (i + 1));
+    elsAnim.clip.appendChild(opt);
+  });
+  elsAnim.clip.hidden = clips.length < 2;
+  selectClip(0);
+  elsAnim.player.hidden = currentRoom !== 'rig';
+}
+
+function selectClip(i) {
+  if (!rigActions.length) return;
+  setPlaying(false);
+  if (rigAction) rigAction.stop();
+  rigAction = rigActions[i] || rigActions[0];
+  rigAction.reset();
+  rigAction.play();
+  rigAction.paused = true;
+  const dur = animDuration() || 1;
+  rigTotalFrames = Math.max(1, Math.round(dur * rigFps));
+  elsAnim.timeline.min = '0';
+  elsAnim.timeline.max = String(rigTotalFrames);
+  elsAnim.timeline.value = '0';
+  rigAction.time = 0;
+  if (rigMixer) rigMixer.update(0);
+  syncAnimUi();
+}
+
+function teardownAnimations() {
+  setPlaying(false);
+  if (rigMixer) {
+    rigMixer.stopAllAction();
+    if (rigMixer._root) rigMixer.uncacheRoot(rigMixer.getRoot());
+    rigMixer = null;
+  }
+  rigActions = [];
+  rigClips = [];
+  rigAction = null;
+  rigTotalFrames = 0;
+  elsAnim.player.hidden = true;
+  elsAnim.frame.textContent = '0 / 0';
+  elsAnim.timeline.value = '0';
+  elsAnim.timeline.max = '0';
+}
+
+elsAnim.play.addEventListener('click', () => setPlaying(!rigPlaying));
+
+elsAnim.timeline.addEventListener('input', () => {
+  seekFrame(parseInt(elsAnim.timeline.value, 10) || 0);
+});
+
+elsAnim.clip.addEventListener('change', () => {
+  selectClip(parseInt(elsAnim.clip.value, 10) || 0);
+});
+
+elsAnim.fpsSel.addEventListener('change', () => {
+  const oldFps = rigFps;
+  rigFps = parseInt(elsAnim.fpsSel.value, 10) || 24;
+  if (rigAction && oldFps > 0) {
+    const t = rigAction.time;
+    const dur = animDuration() || 1;
+    rigTotalFrames = Math.max(1, Math.round(dur * rigFps));
+    elsAnim.timeline.max = String(rigTotalFrames);
+    seekFrame(Math.round(t * rigFps));
+    if (t >= dur - 1e-6) rigAction.time = 0;
+  }
+});
+
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'Space') return;
+  if (currentRoom !== 'rig' || !rigAction) return;
+  const tag = (e.target && e.target.tagName) || '';
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'BUTTON') return;
+  e.preventDefault();
+  setPlaying(!rigPlaying);
+});
+
+async function loadRigFile(file) {
+  clearRig();
+  elsRig.log.textContent = '';
+  elsRig.status.textContent = 'Загрузка модели…';
+  const url = URL.createObjectURL(file);
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  try {
+    let root;
+    let clips = [];
+    if (ext === 'fbx') {
+      root = await new FBXLoader().loadAsync(url);
+      clips = root.animations || [];
+    } else {
+      const gltf = await loader.loadAsync(url);
+      root = gltf.scene || (gltf.scenes && gltf.scenes[0]);
+      clips = gltf.animations || [];
+    }
+    if (!root) throw new Error('модель не найдена в файле');
+    fixTextureColorSpace(root);
+    rigRoot = root;
+    rigGroup.add(root);
+    let meshCount = 0;
+    root.traverse((o) => { if (o.isMesh) meshCount++; });
+    const skel = buildRigSkeleton(root);
+    applyRigDepth();
+    setupAnimations(root, clips);
+    frameObject(root);
+    let msg = 'Модель загружена · мешей: ' + meshCount;
+    if (skel.bones > 0) msg += ' · костей: ' + skel.bones + ' · сегментов: ' + skel.segments;
+    else msg += ' · скелет не найден';
+    if (clips.length) msg += ' · анимаций: ' + clips.length;
+    elsRig.status.textContent = msg;
+  } catch (e) {
+    clearRig();
+    elsRig.status.textContent = 'Ошибка загрузки: ' + (e && e.message ? e.message : e);
+    elsRig.log.textContent = String((e && e.stack) || e);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+bindFile(elsRig.file, elsRig.name, 'выбрать…');
+
+elsRig.file.addEventListener('change', () => {
+  const f = elsRig.file.files && elsRig.file.files[0];
+  if (f) loadRigFile(f);
+});
+
+elsRig.skelToggle.addEventListener('change', () => {
+  rigSkelOn = elsRig.skelToggle.checked;
+  setRigBonesVisible(rigSkelOn);
+});
+
+elsRig.inFrontToggle.addEventListener('change', () => {
+  rigInFront = elsRig.inFrontToggle.checked;
+  applyRigDepth();
+});
+
+elsRig.gridToggle.addEventListener('change', () => {
+  setGridVisible(elsRig.gridToggle.checked);
+});
+
+const tabs = document.querySelectorAll('.tab');
+const bakePanelEl = document.getElementById('bakePanel');
+const rigPanelEl = document.getElementById('rigPanel');
+
+function switchRoom(name) {
+  currentRoom = name;
+  for (const t of tabs) t.classList.toggle('active', t.dataset.room === name);
+  bakePanelEl.hidden = name !== 'bake';
+  rigPanelEl.hidden = name !== 'rig';
+  if (currentRoot) currentRoot.visible = name === 'bake';
+  rigGroup.visible = name === 'rig';
+  elsAnim.player.hidden = !(name === 'rig' && rigClips.length > 0);
+  if (name !== 'rig' && rigPlaying) setPlaying(false);
+  if (name === 'bake' && currentRoot) frameObject(currentRoot);
+  if (name === 'rig') {
+    elsRig.gridToggle.checked = sceneGrid.visible;
+    if (rigRoot) frameObject(rigRoot);
+  }
+}
+
+for (const t of tabs) t.addEventListener('click', () => switchRoom(t.dataset.room));
+
+(function loop() {
+  requestAnimationFrame(loop);
+  const dt = animClock.getDelta();
+  if (rigMixer && rigPlaying) {
+    rigMixer.update(dt);
+    syncAnimUi();
+  }
+  controls.update();
+  renderer.render(scene, camera);
+})();

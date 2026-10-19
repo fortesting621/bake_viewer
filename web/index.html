@@ -8,12 +8,43 @@
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; font-family: Segoe UI, Roboto, sans-serif; }
-  #app { display: flex; height: 100%; }
+  body { display: flex; flex-direction: column; }
+  #topbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; background: #23262b;
+    border-bottom: 1px solid #33373d; flex-shrink: 0;
+  }
+  .tab {
+    width: auto !important; padding: 8px 20px !important;
+    background: #2f343b !important; color: #a7aeb8 !important;
+    border: 1px solid #3a3f46 !important; border-radius: 6px !important;
+    font-size: 13px !important; font-weight: 600 !important; cursor: pointer;
+  }
+  .tab.active { background: #2f7fd8 !important; color: #fff !important; border-color: #2f7fd8 !important; }
+  #app { display: flex; flex: 1; min-height: 0; }
   #view { flex: 1; position: relative; background: #1b1d21; }
   #view canvas { display: block; }
-  #panel {
+  .panel {
     width: 340px; background: #23262b; border-left: 1px solid #33373d;
     padding: 16px; overflow-y: auto; flex-shrink: 0;
+  }
+  .panel[hidden] { display: none; }
+  #rigPlayer {
+    position: absolute; left: 50%; transform: translateX(-50%); bottom: 14px;
+    display: flex; align-items: center; gap: 10px; z-index: 50;
+    background: rgba(30, 33, 38, .92); border: 1px solid #33373d;
+    border-radius: 8px; padding: 8px 12px;
+  }
+  #rigPlayer[hidden] { display: none; }
+  #rigPlay { width: 40px; height: 30px; padding: 0; flex-shrink: 0; font-size: 14px; line-height: 1; }
+  #rigFrame {
+    font-size: 12px; color: #a7aeb8; font-variant-numeric: tabular-nums;
+    min-width: 64px; text-align: center;
+  }
+  #rigTimeline { width: 240px; }
+  #rigClip, #rigFpsSel {
+    width: auto; background: #1b1d21; color: #e6e8ea; border: 1px solid #3a3f46;
+    border-radius: 5px; padding: 4px 6px; font-size: 12px;
   }
   h1 { font-size: 15px; margin: 0 0 4px; }
   .sub { font-size: 12px; color: #8b929c; margin-bottom: 16px; }
@@ -35,8 +66,8 @@
   button:disabled { background: #3a4149; color: #8b929c; cursor: default; }
   button.secondary { background: #3a4149; color: #d7dbe0; font-size: 13px; padding: 9px; }
   .btn-row { display: flex; gap: 8px; }
-  #status { font-size: 12px; margin-top: 10px; color: #8b929c; white-space: pre-wrap; }
-  #log { font-size: 10px; color: #6b727c; margin-top: 10px; max-height: 140px; overflow: auto; white-space: pre-wrap; }
+  #status, #rigStatus { font-size: 12px; margin-top: 10px; color: #8b929c; white-space: pre-wrap; }
+  #log, #rigLog { font-size: 10px; color: #6b727c; margin-top: 10px; max-height: 140px; overflow: auto; white-space: pre-wrap; }
 
   .box {
     border: 1px solid #33373d; border-radius: 8px;
@@ -136,10 +167,26 @@
 </style>
 </head>
 <body>
+<div id="topbar">
+  <button class="tab active" data-room="bake">Комната бэйка</button>
+  <button class="tab" data-room="rig">Комната рига</button>
+</div>
 <div id="app">
-  <div id="view"></div>
-  <div id="panel">
-    <h1>Перепечка base color</h1>
+  <div id="view">
+    <div id="rigPlayer" hidden>
+      <button id="rigPlay" title="Пробел — старт/стоп">▶</button>
+      <span id="rigFrame">0 / 0</span>
+      <input type="range" id="rigTimeline" min="0" max="0" step="1" value="0">
+      <select id="rigClip" hidden></select>
+      <select id="rigFpsSel" title="FPS">
+        <option value="24" selected>24 fps</option>
+        <option value="30">30 fps</option>
+        <option value="60">60 fps</option>
+      </select>
+    </div>
+  </div>
+  <div class="panel" id="bakePanel">
+    <h1>Комната бэйка</h1>
     <div class="sub">high → low (Selected to Active) · <span id="appVer"></span></div>
 
     <details class="box" open>
@@ -304,6 +351,42 @@
       </div>
     </details>
   </div>
+
+  <div class="panel" id="rigPanel" hidden>
+    <h1>Комната рига</h1>
+    <div class="sub">модель со скелетом · просмотр</div>
+
+    <details class="box" open>
+      <summary>Импорт модели</summary>
+      <div class="box-body">
+        <label class="file">
+          <span>Модель</span>
+          <span class="pick empty" id="rigName">выбрать…</span>
+          <input type="file" id="rigFile" accept=".fbx,.glb,.gltf">
+        </label>
+        <div id="rigStatus"></div>
+        <div id="rigLog"></div>
+      </div>
+    </details>
+
+    <details class="box" open>
+      <summary>Отображение</summary>
+      <div class="box-body">
+        <label class="toggle">
+          <input type="checkbox" id="rigSkelToggle" checked>
+          <span>Скелет</span>
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="rigInFrontToggle" checked>
+          <span>Скелет поверх модели</span>
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="rigGridToggle" checked>
+          <span>Опорная сетка</span>
+        </label>
+      </div>
+    </details>
+  </div>
 </div>
 
 <div id="tooltip"></div>
@@ -317,6 +400,6 @@
   }
 }
 </script>
-<script type="module" src="./app.js?v=20261018g"></script>
+<script type="module" src="./app.js?v=20261019d"></script>
 </body>
 </html>
