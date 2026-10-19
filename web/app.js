@@ -2,11 +2,12 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const view = document.getElementById('view');
 const appVerEl = document.getElementById('appVer');
-if (appVerEl) appVerEl.textContent = 'v20261019d';
+if (appVerEl) appVerEl.textContent = 'v20261019i';
 
 window.addEventListener('error', (e) => {
   const st = document.getElementById('status');
@@ -778,16 +779,19 @@ const rigBoneMaterial = new THREE.MeshBasicMaterial({
   color: 0xa6b0ba,
   side: THREE.DoubleSide,
   depthWrite: false,
+  depthTest: false,
 });
 const rigBoneLineMaterial = new THREE.LineBasicMaterial({
   color: 0x22262b,
   depthWrite: false,
+  depthTest: false,
 });
 
 let rigRoot = null;
 const rigBoneObjs = [];
 let rigSkelOn = true;
-let rigInFront = true;
+let rigStatic = false;
+let rigBindPose = [];
 
 const elsRig = {
   file: document.getElementById('rigFile'),
@@ -795,16 +799,9 @@ const elsRig = {
   status: document.getElementById('rigStatus'),
   log: document.getElementById('rigLog'),
   skelToggle: document.getElementById('rigSkelToggle'),
-  inFrontToggle: document.getElementById('rigInFrontToggle'),
+  staticToggle: document.getElementById('rigStaticToggle'),
   gridToggle: document.getElementById('rigGridToggle'),
 };
-
-function applyRigDepth() {
-  rigBoneMaterial.depthTest = !rigInFront;
-  rigBoneMaterial.needsUpdate = true;
-  rigBoneLineMaterial.depthTest = !rigInFront;
-  rigBoneLineMaterial.needsUpdate = true;
-}
 
 function setRigBonesVisible(v) {
   for (const o of rigBoneObjs) o.visible = v;
@@ -868,6 +865,8 @@ function buildRigSkeleton(root) {
 
 function clearRig() {
   teardownAnimations();
+  resetWeightState();
+  rigBindPose = [];
   for (const o of rigBoneObjs) {
     if (o.geometry) o.geometry.dispose();
     if (o.parent) o.parent.remove(o);
@@ -902,6 +901,22 @@ function fixTextureColorSpace(root) {
   });
 }
 
+function normalizeImportedMaterials(root) {
+  root.traverse((o) => {
+    const mats = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : [];
+    for (const m of mats) {
+      if (m.isMeshPhongMaterial) {
+        m.specular.setHex(0x111111);
+        m.shininess = 30;
+      }
+      if (m.emissive && !m.emissiveMap && !(m.emissiveIntensity > 0)) {
+        m.emissive.setHex(0x000000);
+      }
+      m.needsUpdate = true;
+    }
+  });
+}
+
 const elsAnim = {
   player: document.getElementById('rigPlayer'),
   play: document.getElementById('rigPlay'),
@@ -913,6 +928,52 @@ const elsAnim = {
 
 function animDuration() {
   return rigAction && rigAction.getClip ? rigAction.getClip().duration : 0;
+}
+
+function captureBindPose(root) {
+  rigBindPose = [];
+  root.traverse((o) => {
+    if (o.isBone) {
+      rigBindPose.push({
+        bone: o,
+        pos: o.position.clone(),
+        quat: o.quaternion.clone(),
+        scale: o.scale.clone(),
+      });
+    }
+  });
+}
+
+function restoreBindPose() {
+  for (const b of rigBindPose) {
+    b.bone.position.copy(b.pos);
+    b.bone.quaternion.copy(b.quat);
+    b.bone.scale.copy(b.scale);
+  }
+}
+
+function updateAnimControls() {
+  const dis = rigStatic || weightMode;
+  elsAnim.play.disabled = dis;
+  elsAnim.timeline.disabled = dis;
+  elsAnim.clip.disabled = dis;
+}
+
+function setStaticMode(v) {
+  rigStatic = v;
+  updateAnimControls();
+  if (v) {
+    setPlaying(false);
+    if (rigMixer) rigMixer.stopAllAction();
+    restoreBindPose();
+  } else if (rigAction) {
+    rigAction.reset();
+    rigAction.play();
+    rigAction.paused = true;
+    rigAction.time = 0;
+    if (rigMixer) rigMixer.update(0);
+    syncAnimUi();
+  }
 }
 
 function syncAnimUi() {
@@ -928,6 +989,7 @@ function syncAnimUi() {
 
 function setPlaying(v) {
   if (!rigAction) return;
+  if (v && (rigStatic || weightMode)) return;
   rigPlaying = v;
   rigAction.paused = !v;
   elsAnim.play.textContent = v ? '⏸' : '▶';
@@ -1034,6 +1096,556 @@ window.addEventListener('keydown', (e) => {
   setPlaying(!rigPlaying);
 });
 
+const weightMat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+
+const brushRingGeo = new THREE.BufferGeometry();
+{
+  const pts = [];
+  for (let i = 0; i < 64; i++) {
+    const a = (i / 64) * Math.PI * 2;
+    pts.push(Math.cos(a), Math.sin(a), 0);
+  }
+  brushRingGeo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+}
+const brushCursor = new THREE.LineLoop(
+  brushRingGeo,
+  new THREE.LineBasicMaterial({ color: 0xffe14d, depthTest: false, depthWrite: false })
+);
+brushCursor.renderOrder = 1001;
+brushCursor.visible = false;
+rigGroup.add(brushCursor);
+
+let weightMode = false;
+let weightBoneName = '';
+let rigFileBase = 'model';
+let rigDiag = 1;
+let brushRadiusFrac = 0.06;
+let brushStrength = 0.15;
+let brushMode = 'add';
+let painting = false;
+let exportingNow = false;
+const weightOrigMats = new Map();
+const weightOrigColors = new Map();
+const weightColorAttrs = new Map();
+
+const elsW = {
+  mode: document.getElementById('rigWeightMode'),
+  bone: document.getElementById('rigWeightBone'),
+  radius: document.getElementById('rigBrushRadius'),
+  radiusLabel: document.getElementById('rigBrushRadius_v'),
+  strength: document.getElementById('rigBrushStrength'),
+  strengthLabel: document.getElementById('rigBrushStrength_v'),
+  brushMode: document.getElementById('rigBrushMode'),
+  normalize: document.getElementById('rigWeightNormalize'),
+  info: document.getElementById('rigWeightInfo'),
+  exportGlb: document.getElementById('rigExportGlb'),
+  exportFbx: document.getElementById('rigExportFbx'),
+  exportStatus: document.getElementById('rigExportStatus'),
+};
+
+const raycaster = new THREE.Raycaster();
+const pointerNdc = new THREE.Vector2();
+const tmpPos = new THREE.Vector3();
+const tmpNor = new THREE.Vector3();
+const tmpNor2 = new THREE.Vector3();
+const tmpMat3 = new THREE.Matrix3();
+const tmpColor = new THREE.Color();
+const zAxis = new THREE.Vector3(0, 0, 1);
+
+function skinnedMeshes() {
+  const out = [];
+  if (rigRoot) {
+    rigRoot.traverse((o) => {
+      if (o.isSkinnedMesh && o.geometry && o.geometry.attributes.skinIndex && o.geometry.attributes.skinWeight) {
+        out.push(o);
+      }
+    });
+  }
+  return out;
+}
+
+function boneIndexFor(mesh) {
+  if (!mesh.skeleton || !mesh.skeleton.bones) return -1;
+  return mesh.skeleton.bones.findIndex((b) => b.name === weightBoneName);
+}
+
+function weightColor(w, out) {
+  const t = w < 0 ? 0 : (w > 1 ? 1 : w);
+  out.setHSL(((1 - t) * 240) / 360, 1, 0.5);
+  return out;
+}
+
+function weightOfSlot(mesh, vi, bi) {
+  const geo = mesh.geometry;
+  const si = geo.attributes.skinIndex;
+  const sw = geo.attributes.skinWeight;
+  let w = 0;
+  for (let k = 0; k < 4; k++) {
+    if (Math.round(si.getComponent(vi, k)) === bi) w += sw.getComponent(vi, k);
+  }
+  return w;
+}
+
+function brushRadiusWorld() {
+  return Math.max(rigDiag * brushRadiusFrac, 1e-6);
+}
+
+function updateWeightColors() {
+  if (!weightMode) return;
+  const c = new THREE.Color();
+  for (const m of skinnedMeshes()) {
+    const geo = m.geometry;
+    const si = geo.attributes.skinIndex;
+    const sw = geo.attributes.skinWeight;
+    const count = geo.attributes.position.count;
+    let col = weightColorAttrs.get(m);
+    if (!col || col.count !== count) {
+      col = new THREE.BufferAttribute(new Float32Array(count * 3), 3);
+      weightColorAttrs.set(m, col);
+    }
+    const bi = boneIndexFor(m);
+    for (let i = 0; i < count; i++) {
+      let w = 0;
+      if (bi >= 0) {
+        for (let k = 0; k < 4; k++) {
+          if (Math.round(si.getComponent(i, k)) === bi) w += sw.getComponent(i, k);
+        }
+      }
+      weightColor(w, c);
+      col.setXYZ(i, c.r, c.g, c.b);
+    }
+    col.needsUpdate = true;
+    geo.setAttribute('color', col);
+  }
+}
+
+function positionBrushCursor(center, normal, radius) {
+  tmpPos.copy(center);
+  rigGroup.worldToLocal(tmpPos);
+  brushCursor.position.copy(tmpPos);
+  brushCursor.quaternion.setFromUnitVectors(zAxis, normal);
+  brushCursor.scale.setScalar(radius);
+  brushCursor.visible = true;
+}
+
+function applyBrush(center, normal, radius) {
+  const r2 = radius * radius;
+  const invRadius = 1 / radius;
+  let painted = 0;
+  for (const mesh of skinnedMeshes()) {
+    const bi = boneIndexFor(mesh);
+    if (bi < 0) continue;
+    const geo = mesh.geometry;
+    const pos = geo.attributes.position;
+    const nor = geo.attributes.normal;
+    const col = weightColorAttrs.get(mesh);
+    tmpMat3.getNormalMatrix(mesh.matrixWorld);
+    let touched = false;
+    for (let i = 0; i < pos.count; i++) {
+      tmpPos.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+      const dist2 = tmpPos.distanceToSquared(center);
+      if (dist2 > r2) continue;
+      if (nor) {
+        tmpNor2.fromBufferAttribute(nor, i).applyMatrix3(tmpMat3).normalize();
+        if (tmpNor2.dot(normal) < 0) continue;
+      }
+      const t = 1 - Math.sqrt(dist2) * invRadius;
+      const fall = t * t * (3 - 2 * t);
+      const old = weightOfSlot(mesh, i, bi);
+      const delta = brushStrength * fall;
+      let nw = brushMode === 'sub' ? old - delta : old + delta;
+      nw = nw < 0 ? 0 : (nw > 1 ? 1 : nw);
+      if (setVertexWeight(mesh, i, bi, nw)) {
+        if (col) {
+          weightColor(weightOfSlot(mesh, i, bi), tmpColor);
+          col.setXYZ(i, tmpColor.r, tmpColor.g, tmpColor.b);
+        }
+        touched = true;
+        painted++;
+      }
+    }
+    if (touched && col) col.needsUpdate = true;
+  }
+  return painted;
+}
+
+function paintAt(e) {
+  const r = renderer.domElement.getBoundingClientRect();
+  pointerNdc.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+  pointerNdc.y = -((e.clientY - r.top) / r.height) * 2 + 1;
+  raycaster.setFromCamera(pointerNdc, camera);
+  const hits = raycaster.intersectObjects(skinnedMeshes(), false);
+  if (!hits.length) {
+    brushCursor.visible = false;
+    return;
+  }
+  const hit = hits[0];
+  tmpNor.set(0, 0, 1);
+  if (hit.face) tmpNor.copy(hit.face.normal).transformDirection(hit.object.matrixWorld);
+  const radius = brushRadiusWorld();
+  positionBrushCursor(hit.point, tmpNor, radius);
+  if (!painting) return;
+  if (applyBrush(hit.point, tmpNor, radius) > 0) updateWeightInfo();
+}
+
+function setVertexWeight(mesh, vi, bi, w) {
+  const geo = mesh.geometry;
+  const si = geo.attributes.skinIndex;
+  const sw = geo.attributes.skinWeight;
+  if (!si || !sw || bi < 0) return false;
+  const idx = [si.getComponent(vi, 0), si.getComponent(vi, 1), si.getComponent(vi, 2), si.getComponent(vi, 3)];
+  const wts = [sw.getComponent(vi, 0), sw.getComponent(vi, 1), sw.getComponent(vi, 2), sw.getComponent(vi, 3)];
+  let slot = idx.findIndex((n) => Math.round(n) === bi);
+  let inserted = false;
+  if (slot < 0) {
+    if (w <= 0) return false;
+    slot = wts.findIndex((x) => x < 1e-5);
+    if (slot < 0) {
+      slot = 0;
+      for (let k = 1; k < 4; k++) if (wts[k] < wts[slot]) slot = k;
+    }
+    idx[slot] = bi;
+    inserted = true;
+  }
+  wts[slot] = w;
+  let otherSum = 0;
+  for (let k = 0; k < 4; k++) if (k !== slot) otherSum += wts[k];
+  if (otherSum > 1e-6) {
+    const rest = (1 - w) / otherSum;
+    for (let k = 0; k < 4; k++) if (k !== slot) wts[k] *= rest;
+  }
+  const sum = wts[0] + wts[1] + wts[2] + wts[3];
+  if (sum > 1e-6) {
+    for (let k = 0; k < 4; k++) wts[k] /= sum;
+  }
+  if (inserted) {
+    for (let k = 0; k < 4; k++) si.setComponent(vi, k, idx[k]);
+    si.needsUpdate = true;
+  }
+  for (let k = 0; k < 4; k++) sw.setComponent(vi, k, wts[k]);
+  sw.needsUpdate = true;
+  return true;
+}
+
+function normalizeAllWeights() {
+  let changed = 0;
+  for (const m of skinnedMeshes()) {
+    const sw = m.geometry.attributes.skinWeight;
+    if (!sw) continue;
+    const count = m.geometry.attributes.position.count;
+    for (let i = 0; i < count; i++) {
+      const w0 = sw.getComponent(i, 0);
+      const w1 = sw.getComponent(i, 1);
+      const w2 = sw.getComponent(i, 2);
+      const w3 = sw.getComponent(i, 3);
+      const sum = w0 + w1 + w2 + w3;
+      if (sum > 1e-6 && Math.abs(sum - 1) > 1e-4) {
+        sw.setComponent(i, 0, w0 / sum);
+        sw.setComponent(i, 1, w1 / sum);
+        sw.setComponent(i, 2, w2 / sum);
+        sw.setComponent(i, 3, w3 / sum);
+        changed++;
+      }
+    }
+    sw.needsUpdate = true;
+  }
+  updateWeightColors();
+  updateWeightInfo();
+  elsW.info.textContent = (elsW.info.textContent ? elsW.info.textContent + ' · ' : '') + 'нормализовано вершин: ' + changed;
+}
+
+function applyWeightVisuals(on) {
+  const sm = skinnedMeshes();
+  if (on) {
+    for (const m of sm) {
+      if (!weightOrigMats.has(m)) weightOrigMats.set(m, m.material);
+      if (!weightOrigColors.has(m)) weightOrigColors.set(m, m.geometry.attributes.color || null);
+      m.material = weightMat;
+    }
+  } else {
+    for (const [m, mat] of weightOrigMats) {
+      m.material = mat;
+      const orig = weightOrigColors.get(m);
+      if (orig) m.geometry.setAttribute('color', orig);
+      else m.geometry.deleteAttribute('color');
+    }
+    weightOrigMats.clear();
+    weightOrigColors.clear();
+  }
+}
+
+function populateBoneSelect() {
+  const names = [];
+  for (const m of skinnedMeshes()) {
+    if (!m.skeleton) continue;
+    for (const b of m.skeleton.bones) {
+      if (b.name && !names.includes(b.name)) names.push(b.name);
+    }
+  }
+  const prev = weightBoneName;
+  weightBoneName = names.includes(prev) ? prev : (names[0] || '');
+  elsW.bone.innerHTML = '';
+  const list = names.length ? names : ['—'];
+  for (const n of list) {
+    const opt = document.createElement('option');
+    opt.value = n;
+    opt.textContent = n;
+    elsW.bone.appendChild(opt);
+  }
+  if (names.length) elsW.bone.value = weightBoneName;
+}
+
+function updateWeightInfo() {
+  let text = '';
+  if (!weightMode) {
+    text = 'включите режим весов и выберите кость — затем ведите по модели с зажатой ЛКМ';
+  } else if (!rigRoot) {
+    text = 'модель не загружена';
+  } else if (!skinnedMeshes().length) {
+    text = 'в модели нет SkinnedMesh — веса недоступны';
+  } else {
+    text = 'кость: ' + (weightBoneName || '—') +
+      ' · кисть: рад. ' + Math.round(brushRadiusFrac * 100) + ' %' +
+      ' · сила ' + Math.round(brushStrength * 100) + ' %' +
+      ' · режим: ' + (brushMode === 'sub' ? 'вычесть' : 'добавить');
+  }
+  elsW.info.textContent = text;
+}
+
+function refreshWeightUi() {
+  const sm = rigRoot ? skinnedMeshes() : [];
+  const dis = !weightMode || sm.length === 0;
+  elsW.bone.disabled = dis;
+  elsW.radius.disabled = dis;
+  elsW.strength.disabled = dis;
+  elsW.brushMode.disabled = dis;
+  elsW.normalize.disabled = dis;
+  updateWeightInfo();
+}
+
+function resetWeightState() {
+  weightBoneName = '';
+  painting = false;
+  brushCursor.visible = false;
+  weightOrigMats.clear();
+  weightOrigColors.clear();
+  weightColorAttrs.clear();
+  elsW.bone.innerHTML = '';
+  const opt = document.createElement('option');
+  opt.textContent = '—';
+  elsW.bone.appendChild(opt);
+  elsW.bone.disabled = true;
+  elsW.radius.disabled = true;
+  elsW.strength.disabled = true;
+  elsW.brushMode.disabled = true;
+  elsW.normalize.disabled = true;
+  elsW.exportGlb.disabled = true;
+  elsW.exportFbx.disabled = true;
+  elsW.exportStatus.textContent = '';
+  updateWeightInfo();
+}
+
+function setBrushControls(on) {
+  if (on) {
+    controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
+  } else {
+    controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+  }
+}
+
+function setWeightMode(v) {
+  if (v === weightMode) return;
+  weightMode = v;
+  elsW.mode.checked = v;
+  setBrushControls(v);
+  if (v) {
+    setPlaying(false);
+    if (rigMixer) rigMixer.stopAllAction();
+    restoreBindPose();
+    elsRig.staticToggle.disabled = true;
+    applyWeightVisuals(true);
+    populateBoneSelect();
+    updateWeightColors();
+    elsW.exportStatus.textContent = '';
+  } else {
+    applyWeightVisuals(false);
+    painting = false;
+    brushCursor.visible = false;
+    elsRig.staticToggle.disabled = false;
+    if (!rigStatic) setStaticMode(false);
+  }
+  updateAnimControls();
+  refreshWeightUi();
+}
+
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (!weightMode || currentRoom !== 'rig' || e.button !== 0) return;
+  painting = true;
+  paintAt(e);
+});
+
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (!weightMode || currentRoom !== 'rig') return;
+  paintAt(e);
+});
+
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (e.button !== 0) return;
+  painting = false;
+});
+
+renderer.domElement.addEventListener('pointerleave', () => {
+  painting = false;
+  brushCursor.visible = false;
+});
+
+elsW.mode.addEventListener('change', () => setWeightMode(elsW.mode.checked));
+
+elsW.bone.addEventListener('change', () => {
+  weightBoneName = elsW.bone.value;
+  updateWeightColors();
+  updateWeightInfo();
+});
+
+elsW.radius.addEventListener('input', () => {
+  brushRadiusFrac = (parseFloat(elsW.radius.value) || 1) / 100;
+  elsW.radiusLabel.textContent = elsW.radius.value + ' %';
+  updateWeightInfo();
+});
+
+elsW.strength.addEventListener('input', () => {
+  brushStrength = (parseFloat(elsW.strength.value) || 1) / 100;
+  elsW.strengthLabel.textContent = elsW.strength.value + ' %';
+  updateWeightInfo();
+});
+
+elsW.brushMode.addEventListener('change', () => {
+  brushMode = elsW.brushMode.value;
+  updateWeightInfo();
+});
+
+elsW.normalize.addEventListener('click', () => {
+  if (weightMode) normalizeAllWeights();
+});
+
+function detachBoneVisuals() {
+  const out = [];
+  for (const o of rigBoneObjs) {
+    if (o.parent) {
+      out.push([o, o.parent]);
+      o.parent.remove(o);
+    }
+  }
+  return out;
+}
+
+function reattachBoneVisuals(list) {
+  for (const item of list) item[1].add(item[0]);
+}
+
+function buildGlbBuffer() {
+  const detached = detachBoneVisuals();
+  const wasWeight = weightMode;
+  if (wasWeight) applyWeightVisuals(false);
+  const exporter = new GLTFExporter();
+  const opts = { binary: true };
+  if (rigClips && rigClips.length) opts.animations = rigClips;
+  return exporter.parseAsync(rigRoot, opts).finally(() => {
+    if (wasWeight) {
+      applyWeightVisuals(true);
+      updateWeightColors();
+    }
+    reattachBoneVisuals(detached);
+  });
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+async function doExportGlb() {
+  if (!rigRoot || exportingNow) return;
+  exportingNow = true;
+  elsW.exportGlb.disabled = true;
+  elsW.exportFbx.disabled = true;
+  elsW.exportStatus.textContent = 'Экспорт GLB…';
+  try {
+    const buf = await buildGlbBuffer();
+    downloadBlob(new Blob([buf], { type: 'model/gltf-binary' }), rigFileBase + '.glb');
+    elsW.exportStatus.textContent = 'GLB сохранён: ' + rigFileBase + '.glb';
+  } catch (e) {
+    elsW.exportStatus.textContent = 'Ошибка экспорта GLB: ' + (e && e.message ? e.message : e);
+  } finally {
+    exportingNow = false;
+    elsW.exportGlb.disabled = !rigRoot;
+    elsW.exportFbx.disabled = !rigRoot;
+  }
+}
+
+async function doExportFbx() {
+  if (!rigRoot || exportingNow) return;
+  exportingNow = true;
+  elsW.exportGlb.disabled = true;
+  elsW.exportFbx.disabled = true;
+  elsW.exportStatus.textContent = 'Экспорт GLB…';
+  try {
+    const buf = await buildGlbBuffer();
+    elsW.exportStatus.textContent = 'Конвертация в FBX (Blender)…';
+    const r = await fetch('/export-fbx', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: buf,
+    });
+    if (!r.ok) {
+      let msg = 'HTTP ' + r.status;
+      try {
+        const j = await r.json();
+        if (j && j.error) msg = j.error;
+      } catch (_) {}
+      throw new Error(msg);
+    }
+    const blob = await r.blob();
+    downloadBlob(blob, rigFileBase + '.fbx');
+    elsW.exportStatus.textContent = 'FBX сохранён: ' + rigFileBase + '.fbx';
+  } catch (e) {
+    elsW.exportStatus.textContent = 'Ошибка экспорта FBX: ' + (e && e.message ? e.message : e);
+  } finally {
+    exportingNow = false;
+    elsW.exportGlb.disabled = !rigRoot;
+    elsW.exportFbx.disabled = !rigRoot;
+  }
+}
+
+elsW.exportGlb.addEventListener('click', doExportGlb);
+elsW.exportFbx.addEventListener('click', doExportFbx);
+
+function onRigLoaded(file) {
+  const base = (file && file.name ? file.name : '').replace(/\.[^.]+$/, '');
+  rigFileBase = base || 'model';
+  const box = new THREE.Box3().setFromObject(rigRoot);
+  const size = box.getSize(new THREE.Vector3());
+  rigDiag = Math.max(size.x, size.y, size.z) || 1;
+  elsW.exportGlb.disabled = false;
+  elsW.exportFbx.disabled = false;
+  elsW.exportStatus.textContent = '';
+  if (weightMode) {
+    elsW.mode.checked = true;
+    if (rigMixer) rigMixer.stopAllAction();
+    restoreBindPose();
+    applyWeightVisuals(true);
+    populateBoneSelect();
+    updateWeightColors();
+  }
+  refreshWeightUi();
+}
+
 async function loadRigFile(file) {
   clearRig();
   elsRig.log.textContent = '';
@@ -1053,19 +1665,22 @@ async function loadRigFile(file) {
     }
     if (!root) throw new Error('модель не найдена в файле');
     fixTextureColorSpace(root);
+    normalizeImportedMaterials(root);
     rigRoot = root;
     rigGroup.add(root);
     let meshCount = 0;
     root.traverse((o) => { if (o.isMesh) meshCount++; });
     const skel = buildRigSkeleton(root);
-    applyRigDepth();
+    captureBindPose(root);
     setupAnimations(root, clips);
+    if (rigStatic) setStaticMode(true);
     frameObject(root);
     let msg = 'Модель загружена · мешей: ' + meshCount;
     if (skel.bones > 0) msg += ' · костей: ' + skel.bones + ' · сегментов: ' + skel.segments;
     else msg += ' · скелет не найден';
     if (clips.length) msg += ' · анимаций: ' + clips.length;
     elsRig.status.textContent = msg;
+    onRigLoaded(file);
   } catch (e) {
     clearRig();
     elsRig.status.textContent = 'Ошибка загрузки: ' + (e && e.message ? e.message : e);
@@ -1087,9 +1702,8 @@ elsRig.skelToggle.addEventListener('change', () => {
   setRigBonesVisible(rigSkelOn);
 });
 
-elsRig.inFrontToggle.addEventListener('change', () => {
-  rigInFront = elsRig.inFrontToggle.checked;
-  applyRigDepth();
+elsRig.staticToggle.addEventListener('change', () => {
+  setStaticMode(elsRig.staticToggle.checked);
 });
 
 elsRig.gridToggle.addEventListener('change', () => {
@@ -1107,6 +1721,10 @@ function switchRoom(name) {
   rigPanelEl.hidden = name !== 'rig';
   if (currentRoot) currentRoot.visible = name === 'bake';
   rigGroup.visible = name === 'rig';
+  if (name !== 'rig') {
+    painting = false;
+    brushCursor.visible = false;
+  }
   elsAnim.player.hidden = !(name === 'rig' && rigClips.length > 0);
   if (name !== 'rig' && rigPlaying) setPlaying(false);
   if (name === 'bake' && currentRoot) frameObject(currentRoot);

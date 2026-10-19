@@ -15,11 +15,13 @@ VIEWER = os.path.join(BASE, "bake_viewer")
 WEB = os.path.join(VIEWER, "web")
 UPLOADS = os.path.join(VIEWER, "uploads")
 BAKE_SCRIPT = os.path.join(VIEWER, "bake_web.py")
+EXPORT_SCRIPT = os.path.join(VIEWER, "export_fbx.py")
 OUT_TEX = os.path.join(BASE, "l_basecolor.png")
 OUT_GLB = os.path.join(WEB, "model.glb")
 PORT = int(os.environ.get("BAKE_PORT", "8765"))
 
 bake_lock = threading.Lock()
+export_lock = threading.Lock()
 os.makedirs(UPLOADS, exist_ok=True)
 
 
@@ -96,7 +98,41 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.do_bake()
         if path == "/save-texture":
             return self.do_save_texture()
+        if path == "/export-fbx":
+            return self.do_export_fbx()
         self.send_error(404)
+
+    def do_export_fbx(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length) if length else b""
+        if len(body) < 20:
+            return self.reply(400, {"ok": False, "error": "пустое тело (нужен GLB)"})
+        if not export_lock.acquire(blocking=False):
+            return self.reply(409, {"ok": False, "error": "конвертация уже выполняется"})
+        try:
+            in_path = os.path.join(UPLOADS, "_export_tmp.glb")
+            out_path = os.path.join(UPLOADS, "_export_tmp.fbx")
+            with open(in_path, "wb") as f:
+                f.write(body)
+            cfg = {"in": in_path, "out": out_path}
+            p = subprocess.run(
+                [BLENDER, "--background", "--python", EXPORT_SCRIPT, "--", json.dumps(cfg)],
+                capture_output=True, text=True,
+            )
+            if "FBX_OK" not in p.stdout or not os.path.exists(out_path):
+                log = (p.stdout + p.stderr)[-4000:]
+                return self.reply(500, {"ok": False, "error": "Blender: конвертация не удалась", "log": log})
+            with open(out_path, "rb") as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Content-Disposition", 'attachment; filename="model.fbx"')
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+        finally:
+            export_lock.release()
 
     def do_save_texture(self):
         length = int(self.headers.get("Content-Length", 0))

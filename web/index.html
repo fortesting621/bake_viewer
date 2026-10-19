@@ -66,7 +66,7 @@
   button:disabled { background: #3a4149; color: #8b929c; cursor: default; }
   button.secondary { background: #3a4149; color: #d7dbe0; font-size: 13px; padding: 9px; }
   .btn-row { display: flex; gap: 8px; }
-  #status, #rigStatus { font-size: 12px; margin-top: 10px; color: #8b929c; white-space: pre-wrap; }
+  #status, #rigStatus, #rigWeightInfo, #rigExportStatus { font-size: 12px; margin-top: 10px; color: #8b929c; white-space: pre-wrap; }
   #log, #rigLog { font-size: 10px; color: #6b727c; margin-top: 10px; max-height: 140px; overflow: auto; white-space: pre-wrap; }
 
   .box {
@@ -374,16 +374,62 @@
       <div class="box-body">
         <label class="toggle">
           <input type="checkbox" id="rigSkelToggle" checked>
-          <span>Скелет</span>
+          <span>Скелет поверх модели</span>
         </label>
         <label class="toggle">
-          <input type="checkbox" id="rigInFrontToggle" checked>
-          <span>Скелет поверх модели</span>
+          <input type="checkbox" id="rigStaticToggle">
+          <span>Статичная модель (без анимации)</span>
         </label>
         <label class="toggle">
           <input type="checkbox" id="rigGridToggle" checked>
           <span>Опорная сетка</span>
         </label>
+      </div>
+    </details>
+
+    <details class="box" open>
+      <summary>Веса</summary>
+      <div class="box-body">
+        <label class="toggle">
+          <input type="checkbox" id="rigWeightMode">
+          <span>Режим весов (weight paint)</span>
+        </label>
+        <div class="ctrl tight" data-tip="<b>Активная кость (вершинная группа).</b> Выберите кость, затем зажмите <b>ЛКМ</b> и ведите по модели — веса вершин под кистью меняются (как в Blender weight paint).<br>Цветовая карта как в Blender: <em>синий 0 → зелёный 0.5 → красный 1</em>.<br>Камера в этом режиме вращается <b>ПКМ</b>, приближение — колесо/СКМ.">
+          <label>кость</label>
+          <select id="rigWeightBone" disabled>
+            <option>—</option>
+          </select>
+        </div>
+        <div class="ctrl tight" data-tip="<b>Радиус кисти</b> (% от размера модели). Вершины в этом радиусе от точки под курсором получают вес с плавным затуханием от центра к краю.">
+          <label>радиус кисти <span class="val" id="rigBrushRadius_v">6 %</span></label>
+          <input type="range" id="rigBrushRadius" min="1" max="30" step="1" value="6" disabled>
+        </div>
+        <div class="ctrl tight" data-tip="<b>Сила кисти.</b> Насколько сильно вес меняется за одно движение (0–100 %). Каждое движение мыши добавляет/убирает вес с учётом затухания.">
+          <label>сила <span class="val" id="rigBrushStrength_v">15 %</span></label>
+          <input type="range" id="rigBrushStrength" min="1" max="100" step="1" value="15" disabled>
+        </div>
+        <div class="ctrl tight" data-tip="<b>Режим кисти.</b> «Добавить» — увеличивает вес активной кости под кистью, «Вычесть» — уменьшает (ластик).<br>Сумма 4 весов вершины после каждого мазка нормализуется к 1.">
+          <label>режим кисти</label>
+          <select id="rigBrushMode" disabled>
+            <option value="add">Добавить вес</option>
+            <option value="sub">Вычесть вес</option>
+          </select>
+        </div>
+        <div class="btn-row" style="margin-bottom: 8px">
+          <button id="rigWeightNormalize" class="secondary" disabled>Нормализовать всё</button>
+        </div>
+        <div id="rigWeightInfo">включите режим весов и выберите кость — затем ведите по модели с зажатой ЛКМ</div>
+      </div>
+    </details>
+
+    <details class="box" open>
+      <summary>Экспорт</summary>
+      <div class="box-body">
+        <div class="btn-row">
+          <button id="rigExportGlb" class="secondary" disabled>Экспорт GLB</button>
+          <button id="rigExportFbx" class="secondary" disabled>Экспорт FBX</button>
+        </div>
+        <div id="rigExportStatus"></div>
       </div>
     </details>
   </div>
@@ -400,6 +446,6 @@
   }
 }
 </script>
-<script type="module" src="./app.js?v=20261019d"></script>
+<script type="module" src="./app.js?v=20261019i"></script>
 </body>
 </html>
