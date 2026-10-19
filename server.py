@@ -16,12 +16,14 @@ WEB = os.path.join(VIEWER, "web")
 UPLOADS = os.path.join(VIEWER, "uploads")
 BAKE_SCRIPT = os.path.join(VIEWER, "bake_web.py")
 EXPORT_SCRIPT = os.path.join(VIEWER, "export_fbx.py")
+DECIMATE_SCRIPT = os.path.join(VIEWER, "decimate.py")
 OUT_TEX = os.path.join(BASE, "l_basecolor.png")
 OUT_GLB = os.path.join(WEB, "model.glb")
 PORT = int(os.environ.get("BAKE_PORT", "8765"))
 
 bake_lock = threading.Lock()
 export_lock = threading.Lock()
+decimate_lock = threading.Lock()
 os.makedirs(UPLOADS, exist_ok=True)
 
 
@@ -77,6 +79,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path == "/texture.png":
             return self.serve_file(OUT_TEX, "image/png")
+        if path == "/decimated.glb":
+            return self.serve_file(os.path.join(UPLOADS, "_decimate.glb"), "model/gltf-binary")
+        if path == "/decimated.obj":
+            return self.serve_file(os.path.join(UPLOADS, "_decimate.obj"), "text/plain; charset=utf-8")
         return super().do_GET()
 
     def serve_file(self, path, ctype):
@@ -100,7 +106,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.do_save_texture()
         if path == "/export-fbx":
             return self.do_export_fbx()
+        if path == "/decimate":
+            return self.do_decimate()
+        if path == "/shutdown":
+            return self.do_shutdown()
+        if path == "/heartbeat":
+            return self.do_heartbeat()
         self.send_error(404)
+
+    def do_heartbeat(self):
+        self.reply(200, {"ok": True})
+
+    def do_shutdown(self):
+        self.reply(200, {"ok": True})
+        # shutdown after response sent
+        threading.Thread(target=lambda: (time.sleep(0.5), os._exit(0))).start()
 
     def do_export_fbx(self):
         length = int(self.headers.get("Content-Length", 0))
@@ -133,6 +153,73 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(data)
         finally:
             export_lock.release()
+
+    def do_decimate(self):
+        ctype = self.headers.get("Content-Type", "")
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length) if length else b""
+
+        if "multipart/form-data" not in ctype:
+            return self.reply(400, {"ok": False, "error": "expected multipart/form-data"})
+
+        if not decimate_lock.acquire(blocking=False):
+            return self.reply(409, {"ok": False, "error": "децимация уже выполняется"})
+        try:
+            m = re.search(r"boundary=([^;]+)", ctype)
+            boundary = m.group(1).strip().strip('"')
+            parts = parse_multipart(body, boundary)
+
+            src = save_upload(parts.get("mesh"), UPLOADS)
+            if not src:
+                return self.reply(400, {"ok": False, "error": "нужен файл меша"})
+
+            def field(name, default):
+                p = parts.get(name)
+                if not p or not p.get("data"):
+                    return default
+                return p["data"].decode("utf-8", "ignore").strip()
+
+            out_glb = os.path.join(UPLOADS, "_decimate.glb")
+            out_obj = os.path.join(UPLOADS, "_decimate.obj")
+            cfg = {
+                "in": src,
+                "mode": field("mode", "COLLAPSE"),
+                "ratio": float(field("ratio", 0.5)),
+                "iterations": int(float(field("iterations", 1))),
+                "angle": float(field("angle", 5.0)),
+                "out_glb": out_glb,
+                "out_obj": out_obj,
+            }
+
+            t0 = time.time()
+            p = subprocess.run(
+                [BLENDER, "--background", "--python", DECIMATE_SCRIPT, "--", json.dumps(cfg)],
+                capture_output=True, text=True,
+            )
+            if "DECIMATE_OK" not in p.stdout or not os.path.exists(out_glb):
+                log = (p.stdout + p.stderr)[-4000:]
+                return self.reply(500, {"ok": False, "error": "Blender: децимация не удалась", "log": log})
+
+            info = {}
+            for line in p.stdout.splitlines():
+                if line.startswith("RESULT "):
+                    try:
+                        info = json.loads(line[len("RESULT "):])
+                    except Exception:
+                        pass
+            info["seconds"] = round(time.time() - t0, 1)
+
+            with open(out_glb, "rb") as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "model/gltf-binary")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("X-Decimate-Info", json.dumps(info))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+        finally:
+            decimate_lock.release()
 
     def do_save_texture(self):
         length = int(self.headers.get("Content-Length", 0))

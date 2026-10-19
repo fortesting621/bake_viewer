@@ -2,12 +2,13 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const view = document.getElementById('view');
 const appVerEl = document.getElementById('appVer');
-if (appVerEl) appVerEl.textContent = 'v20261019i';
+if (appVerEl) appVerEl.textContent = 'v20261019j';
 
 window.addEventListener('error', (e) => {
   const st = document.getElementById('status');
@@ -26,6 +27,8 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 view.appendChild(renderer.domElement);
 
 const controls = new OrbitControls(camera, renderer.domElement);
+controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN;
+controls.zoomSpeed = 2;
 controls.target.set(0, 0.35, 0);
 controls.update();
 
@@ -317,9 +320,13 @@ function setupTargets() {
   uniforms.uTex.value = sourceTex;
   uniforms.uTexel.value.set(1 / texW, 1 / texH);
 
-  if (material) {
-    material.map = procRT.texture;
-    material.needsUpdate = true;
+  if (currentRoot) {
+    currentRoot.traverse((o) => {
+      if (o.isMesh && o.material) {
+        o.material.map = procRT.texture;
+        o.material.needsUpdate = true;
+      }
+    });
   }
 
   previewCanvas.width = procW;
@@ -403,51 +410,123 @@ function frameObject(root) {
   sceneGrid.position.y = -size.y / 2;
 }
 
+function updateMeshStats(root) {
+  const el = document.getElementById('meshStats');
+  if (!el) return;
+  if (!root) { el.classList.remove('visible'); el.textContent = ''; return; }
+  let verts = 0, tris = 0, meshes = 0;
+  root.traverse((o) => {
+    if (o.isMesh && o.geometry) {
+      meshes++;
+      verts += o.geometry.attributes.position?.count || 0;
+      const idx = o.geometry.index;
+      if (idx) tris += idx.count / 3;
+      else tris += (o.geometry.attributes.position?.count || 0) / 3;
+    }
+  });
+  el.textContent = `Meshes: ${meshes} | Verts: ${verts} | Tris: ${Math.round(tris)}`;
+  el.classList.add('visible');
+}
+
+function setViewportRoot(root, frame = true) {
+  if (currentRoot) {
+    scene.remove(currentRoot);
+    wires.forEach((w) => w.geometry.dispose());
+    wires = [];
+    clearCage(currentRoot);
+    currentRoot.traverse((o) => { if (o.isMesh && o.geometry) o.geometry.dispose(); });
+  }
+  currentRoot = root;
+  root.visible = currentRoom === 'bake';
+  scene.add(root);
+  buildWires(root);
+  if (cageOn) buildCage(root, cageExtrusion());
+  if (frame) frameObject(root);
+  updateMeshStats(root);
+}
+
 function loadModel() {
   return new Promise((resolve, reject) => {
     loader.load('./model.glb?v=' + (modelVersion++), (gltf) => {
       const root = gltf.scene;
 
-      if (!material) {
-        material = new THREE.MeshStandardMaterial({
-          roughness: 0.85, metalness: 0.0, side: THREE.DoubleSide,
-        });
-        if (procRT) material.map = procRT.texture;
-      }
-
       let meshCount = 0;
       root.traverse((o) => {
         if (o.isMesh) {
           meshCount++;
-          o.material = material;
+          // Each mesh gets its own material instance
+          const mat = new THREE.MeshStandardMaterial({
+            roughness: 0.85, metalness: 0.0, side: THREE.DoubleSide,
+          });
+          if (procRT) mat.map = procRT.texture;
+          o.material = mat;
         }
       });
 
-      if (currentRoot) {
-        scene.remove(currentRoot);
-        wires.forEach((w) => w.geometry.dispose());
-        wires = [];
-        clearCage(currentRoot);
-        currentRoot.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });
-      }
-      currentRoot = root;
-      root.visible = currentRoom === 'bake';
-      scene.add(root);
-      buildWires(root);
-      if (cageOn) buildCage(root, cageExtrusion());
-      frameObject(root);
+      setViewportRoot(root);
       resolve(meshCount);
     }, undefined, reject);
   });
 }
 
-loadModel()
-  .then(() => loadTexture())
-  .catch((err) => {
-    const st = document.getElementById('status');
-    if (st) st.textContent = 'Ошибка загрузки model.glb: ' + err;
-    console.error(err);
+function loadMeshFile(file, userScale = 1) {
+  console.log('[loadMeshFile] start', file.name, file.size, 'userScale:', userScale);
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const ext = file.name.split('.').pop().toLowerCase();
+    console.log('[loadMeshFile] ext', ext);
+    let loaderInstance;
+    if (ext === 'glb' || ext === 'gltf') {
+      loaderInstance = loader;
+    } else if (ext === 'fbx') {
+      loaderInstance = new FBXLoader();
+    } else if (ext === 'obj') {
+      loaderInstance = new OBJLoader();
+    } else if (ext === 'stl') {
+      // STL not imported, fallback to GLTFLoader (won't work well)
+      loaderInstance = loader;
+    } else {
+      loaderInstance = loader;
+    }
+    console.log('[loadMeshFile] loader', loaderInstance.constructor.name);
+    loaderInstance.load(url, (gltf) => {
+      console.log('[loadMeshFile] loaded', gltf);
+      URL.revokeObjectURL(url);
+      const root = gltf.scene || gltf; // FBXLoader returns Group directly
+
+      // Apply FBX unit scale factor (FBX often uses cm, three.js uses meters)
+      const autoScale = root.userData?.unitScaleFactor ?? 1;
+      if (autoScale !== 1) {
+        root.scale.setScalar(autoScale);
+        console.log('[loadMeshFile] applied FBX unitScaleFactor:', autoScale);
+      }
+      // Apply user-specified scale (for FBX without proper UnitScaleFactor)
+      if (userScale !== 1) {
+        root.scale.setScalar(root.scale.x * userScale);
+        console.log('[loadMeshFile] applied user scale:', userScale);
+      }
+      let meshCount = 0;
+      root.traverse((o) => {
+        if (o.isMesh) {
+          meshCount++;
+          // Each mesh gets its own material instance
+          const mat = new THREE.MeshStandardMaterial({
+            roughness: 0.85, metalness: 0.0, side: THREE.DoubleSide,
+          });
+          if (procRT) mat.map = procRT.texture;
+          o.material = mat;
+        }
+      });
+      console.log('[loadMeshFile] meshes', meshCount);
+      setViewportRoot(root, false);
+      resolve(meshCount);
+    }, undefined, (err) => {
+      console.error('[loadMeshFile] error', err);
+      URL.revokeObjectURL(url);
+      reject(err);
+    });
   });
+}
 
 function resize() {
   const w = view.clientWidth, h = view.clientHeight;
@@ -457,6 +536,15 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 resize();
+
+window.addEventListener('beforeunload', () => {
+  navigator.sendBeacon('/shutdown');
+});
+
+// Heartbeat: ping server every 5s; server shuts down after 30s of silence
+setInterval(() => {
+  fetch('/heartbeat', { method: 'POST', keepalive: true }).catch(() => {});
+}, 5000);
 
 const els = {
   cage: document.getElementById('cage'),
@@ -469,6 +557,12 @@ const els = {
   fileLow: document.getElementById('fileLow'),
   fileHigh: document.getElementById('fileHigh'),
   fileTex: document.getElementById('fileTex'),
+  clearLow: document.getElementById('clearLow'),
+  clearHigh: document.getElementById('clearHigh'),
+  clearTex: document.getElementById('clearTex'),
+  fbxScaleRow: document.getElementById('fbxScaleRow'),
+  fbxScale: document.getElementById('fbxScale'),
+  fbxScale_v: document.getElementById('fbxScale_v'),
   lowName: document.getElementById('lowName'),
   highName: document.getElementById('highName'),
   texName: document.getElementById('texName'),
@@ -484,7 +578,36 @@ const els = {
   adjReset: document.getElementById('adjReset'),
 };
 
-function bindFile(input, label, emptyText) {
+const elsD = {
+  file: document.getElementById('decFile'),
+  name: document.getElementById('decName'),
+  mode: document.getElementById('decMode'),
+  ratioRow: document.getElementById('decRatioRow'),
+  iterRow: document.getElementById('decIterRow'),
+  angleRow: document.getElementById('decAngleRow'),
+  targetRow: document.getElementById('decTargetRow'),
+  ratio: document.getElementById('decRatio'),
+  ratio_v: document.getElementById('decRatio_v'),
+  iter: document.getElementById('decIter'),
+  iter_v: document.getElementById('decIter_v'),
+  angle: document.getElementById('decAngle'),
+  angle_v: document.getElementById('decAngle_v'),
+  target: document.getElementById('decTarget'),
+  target_v: document.getElementById('decTarget_v'),
+  btn: document.getElementById('decimate'),
+  exportGlb: document.getElementById('decExportGlb'),
+  exportObj: document.getElementById('decExportObj'),
+  status: document.getElementById('decStatus'),
+  smoothAngle: document.getElementById('smoothAngle'),
+  smoothAngle_v: document.getElementById('smoothAngle_v'),
+  smoothWeighted: document.getElementById('smoothWeighted'),
+  smoothFlat: document.getElementById('smoothFlat'),
+  matFlatShading: document.getElementById('matFlatShading'),
+  applySmooth: document.getElementById('applySmooth'),
+  smoothStatus: document.getElementById('smoothStatus'),
+};
+
+function bindFile(input, label, emptyText, onChange) {
   input.addEventListener('change', () => {
     const f = input.files && input.files[0];
     if (f) {
@@ -495,11 +618,157 @@ function bindFile(input, label, emptyText) {
       label.classList.add('empty');
     }
     updateBakeEnabled();
+    if (onChange) onChange();
   });
 }
-bindFile(els.fileLow, els.lowName, 'выбрать…');
-bindFile(els.fileHigh, els.highName, 'выбрать…');
-bindFile(els.fileTex, els.texName, 'авто из high');
+bindFile(els.fileLow, els.lowName, 'РІС‹Р±СЂР°С‚СЊвЂ¦', () => {
+  const f = els.fileLow.files && els.fileLow.files[0];
+  const isFBX = f && f.name.toLowerCase().endsWith('.fbx');
+  if (els.fbxScaleRow) els.fbxScaleRow.hidden = !isFBX;
+  if (f && currentRoom === 'bake') {
+    const scale = isFBX ? parseFloat(els.fbxScale?.value ?? '1') : 1;
+    loadMeshFile(f, scale).catch(e => els.status.textContent = 'РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё low-poly: ' + e);
+  }
+});
+bindFile(els.fileHigh, els.highName, 'РІС‹Р±СЂР°С‚СЊвЂ¦');
+bindFile(els.fileTex, els.texName, 'Р°РІС‚Рѕ РёР· high');
+
+function clearFile(input, label) {
+  input.value = '';
+  label.textContent = label.dataset.empty || 'РІС‹Р±СЂР°С‚СЊвЂ¦';
+  label.classList.add('empty');
+  updateBakeEnabled();
+  if (currentRoot) {
+    setViewportRoot(null);
+  }
+}
+
+function applyFbxScaleToRoot(scale) {
+  if (!currentRoot) return;
+  // Find the original scale (remove previous user scale)
+  const autoScale = currentRoot.userData?.unitScaleFactor ?? 1;
+  currentRoot.scale.setScalar(autoScale * scale);
+  console.log('[applyFbxScale] applied scale:', scale);
+  renderer.render(scene, camera);
+}
+
+els.fbxScale?.addEventListener('change', () => {
+  const scale = parseFloat(els.fbxScale.value);
+  applyFbxScaleToRoot(scale);
+});
+
+els.clearLow?.addEventListener('click', () => clearFile(els.fileLow, els.lowName));
+els.clearHigh?.addEventListener('click', () => clearFile(els.fileHigh, els.highName));
+els.clearTex?.addEventListener('click', () => clearFile(els.fileTex, els.texName));
+bindFile(elsD.file, elsD.name, 'РІС‹Р±СЂР°С‚СЊвЂ¦', () => {
+  const f = elsD.file.files && elsD.file.files[0];
+  elsD.btn.disabled = !f;
+  if (f && currentRoom === 'bake') {
+    loadMeshFile(f).catch(e => elsD.status.textContent = 'РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё РјРµС€Р°: ' + e);
+  }
+});
+
+elsD.mode.addEventListener('change', () => {
+  const mode = elsD.mode.value;
+  elsD.ratioRow.hidden = mode !== 'COLLAPSE';
+  elsD.iterRow.hidden = mode !== 'UNSUBDIV';
+  elsD.angleRow.hidden = mode !== 'DISSOLVE';
+  elsD.targetRow.hidden = mode !== 'TARGET';
+});
+
+bindDec('smoothAngle', (v) => v + 'В°');
+elsD.smoothAngle.addEventListener('input', () => {
+  elsD.smoothAngle_v.textContent = elsD.smoothAngle.value;
+});
+
+function updateSmoothUI() {
+  const flat = elsD.smoothFlat.checked;
+  elsD.smoothAngle.disabled = flat;
+  elsD.smoothWeighted.disabled = flat;
+}
+elsD.smoothFlat.addEventListener('change', updateSmoothUI);
+elsD.smoothWeighted.addEventListener('change', updateSmoothUI);
+updateSmoothUI();
+
+elsD.matFlatShading.addEventListener('change', () => {
+  if (currentRoot) {
+    currentRoot.traverse((o) => {
+      if (o.isMesh && o.material) {
+        o.material.flatShading = elsD.matFlatShading.checked;
+        o.material.needsUpdate = true;
+      }
+    });
+    renderer.render(scene, camera);
+  }
+});
+ 
+function applySmoothToRoot(root) {
+  console.log('[applySmoothToRoot] start');
+  if (!root) return;
+  const angle = parseFloat(elsD.smoothAngle.value);
+  const flat = elsD.smoothFlat.checked;
+  const matFlat = elsD.matFlatShading?.checked ?? false;
+  console.log('[applySmoothToRoot] angle:', angle, 'flat:', flat, 'matFlat:', matFlat);
+
+  root.traverse((o) => {
+    if (!o.isMesh || !o.geometry) return;
+    const geo = o.geometry;
+
+    if (flat || matFlat || angle >= 179) {
+      // FLAT: use flat vertex normals + material.flatShading
+      if (typeof geo.computeFlatVertexNormals === 'function') {
+        geo.computeFlatVertexNormals();
+      } else {
+        geo.computeVertexNormals();
+      }
+      geo.normalsNeedUpdate = true;
+      if (o.material) {
+        o.material.flatShading = true;
+        o.material.needsUpdate = true;
+      }
+      console.log('[applySmoothToRoot] FLAT done for', o.name);
+      return;
+    }
+
+    // SMOOTH: standard vertex normals + material.flatShading = false
+    geo.computeVertexNormals();
+    geo.normalsNeedUpdate = true;
+    if (o.material) {
+      o.material.flatShading = false;
+      o.material.needsUpdate = true;
+    }
+    console.log('[applySmoothToRoot] SMOOTH done for', o.name);
+  });
+
+  renderer.render(scene, camera);
+  if (elsD.smoothStatus) elsD.smoothStatus.textContent = flat ? 'РџР»РѕСЃРєРѕРµ Р·Р°С‚РµРЅРµРЅРёРµ' : (matFlat ? 'РњР°С‚РµСЂРёР°Р»: flatShading' : ('РЎРіР»Р°Р¶РёРІР°РЅРёРµ (СѓРіРѕР» в‰¤' + angle + 'В°)'));
+  console.log('[applySmoothToRoot] done');
+}
+
+elsD.applySmooth.addEventListener('click', () => {
+  console.log('[applySmooth] clicked, currentRoot:', currentRoot);
+  if (currentRoot) {
+    currentRoot.traverse((o) => {
+      if (o.isMesh) console.log('[applySmooth] mesh:', o.name, 'geo:', o.geometry, 'mat:', o.material);
+    });
+    applySmoothToRoot(currentRoot);
+  }
+});
+
+function bindDec(id, fmt) {
+  const el = document.getElementById(id);
+  const out = document.getElementById(id + '_v');
+  const upd = () => { out.textContent = fmt(parseFloat(el.value)); };
+  el.addEventListener('input', upd);
+  upd();
+}
+bindDec('decRatio', (v) => v.toFixed(2));
+bindDec('decIter', (v) => String(v));
+bindDec('decAngle', (v) => v.toFixed(1));
+bindDec('fbxScale', (v) => {
+    const opt = els.fbxScale?.querySelector(`option[value="${v}"]`);
+    return opt ? opt.textContent : v;
+  });
 
 function updateBakeEnabled() {
   const ready = els.fileLow.files.length > 0 && els.fileHigh.files.length > 0;
@@ -573,8 +842,8 @@ els.cageToggle.addEventListener('change', () => {
     refreshCage();
     const n = currentRoot ? currentRoot.getObjectsByProperty('name', '__cage__').length : 0;
     els.status.textContent = n > 0
-      ? 'Кейдж включён: ' + n + ' оболочек, extrusion ' + cageExtrusion()
-      : 'Кейдж: нет мешей для отображения';
+      ? 'РљРµР№РґР¶ РІРєР»СЋС‡С‘РЅ: ' + n + ' РѕР±РѕР»РѕС‡РµРє, extrusion ' + cageExtrusion()
+      : 'РљРµР№РґР¶: РЅРµС‚ РјРµС€РµР№ РґР»СЏ РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ';
   } else {
     if (currentRoot) clearCage(currentRoot);
     els.status.textContent = '';
@@ -616,11 +885,13 @@ const ADJ_DEFAULTS = {
   adjLevelsBlack: 0, adjLevelsWhite: 1, adjSharpen: 0,
 };
 
+let adjDirty = false;
+
 for (const [id, fmt] of ADJ) {
   const el = document.getElementById(id);
   const out = document.getElementById(id + '_v');
   const upd = () => out.textContent = fmt(parseFloat(el.value));
-  el.addEventListener('input', () => { upd(); processTexture(); });
+  el.addEventListener('input', () => { upd(); processTexture(); adjDirty = true; });
   upd();
 }
 
@@ -631,8 +902,50 @@ function resetAdjustments() {
     document.getElementById(id + '_v').textContent = fmt(ADJ_DEFAULTS[id]);
   }
   processTexture();
+  adjDirty = false;
 }
 els.adjReset.addEventListener('click', resetAdjustments);
+
+async function saveTexture() {
+  els.adjSave.disabled = true;
+  els.status.textContent = 'РЎРѕС…СЂР°РЅРµРЅРёРµ PNGвЂ¦';
+  try {
+    const blob = await exportBlob();
+    if (!blob) throw new Error('РЅРµС‚ С‚РµРєСЃС‚СѓСЂС‹');
+    const r = await fetch('/save-texture', { method: 'POST', body: blob });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    await loadTexture();
+    resetAdjustments();
+    els.status.textContent = 'Base color СЃРѕС…СЂР°РЅРµРЅР° РЅР° СЃРµСЂРІРµСЂРµ, РєРѕСЂСЂРµРєС†РёСЏ РїСЂРёРјРµРЅРµРЅР°.';
+  } catch (e) {
+    els.status.textContent = 'РћС€РёР±РєР° СЃРѕС…СЂР°РЅРµРЅРёСЏ: ' + e;
+  } finally {
+    els.adjSave.disabled = false;
+  }
+}
+
+els.adjSave.addEventListener('click', saveTexture);
+
+els.adjDownload.addEventListener('click', async () => {
+  els.adjDownload.disabled = true;
+  try {
+    const blob = await exportBlob();
+    if (!blob) throw new Error('РЅРµС‚ С‚РµРєСЃС‚СѓСЂС‹');
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'basecolor.png';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    adjDirty = false;
+  } catch (e) {
+    els.status.textContent = 'РћС€РёР±РєР° СЃРєР°С‡РёРІР°РЅРёСЏ: ' + e;
+  } finally {
+    els.adjDownload.disabled = false;
+  }
+});
 
 async function bake() {
   const fd = new FormData();
@@ -646,10 +959,10 @@ async function bake() {
 
   els.bake.disabled = true;
   els.log.textContent = '';
-  els.status.textContent = 'Загрузка и бейк…';
+  els.status.textContent = 'Р—Р°РіСЂСѓР·РєР° Рё Р±РµР№РєвЂ¦';
   const t0 = Date.now();
   const timer = setInterval(() => {
-    els.status.textContent = 'Печём… ' + ((Date.now() - t0) / 1000).toFixed(0) + ' с';
+    els.status.textContent = 'РџРµС‡С‘РјвЂ¦ ' + ((Date.now() - t0) / 1000).toFixed(0) + ' СЃ';
   }, 500);
 
   try {
@@ -662,15 +975,15 @@ async function bake() {
       await loadTexture();
       const info = data.info || {};
       els.status.textContent =
-        'Готово за ' + data.seconds + ' с · мешей: ' + meshCount +
-        (info.texture ? ' · текстура: ' + info.texture : '');
+        'Р“РѕС‚РѕРІРѕ Р·Р° ' + data.seconds + ' СЃ В· РјРµС€РµР№: ' + meshCount +
+        (info.texture ? ' В· С‚РµРєСЃС‚СѓСЂР°: ' + info.texture : '');
     } else {
-      els.status.textContent = 'Ошибка бейка';
+      els.status.textContent = 'РћС€РёР±РєР° Р±РµР№РєР°';
       els.log.textContent = data.log || data.error || '';
     }
   } catch (e) {
     clearInterval(timer);
-    els.status.textContent = 'Ошибка запроса';
+    els.status.textContent = 'РћС€РёР±РєР° Р·Р°РїСЂРѕСЃР°';
     els.log.textContent = String(e);
   } finally {
     updateBakeEnabled();
@@ -702,42 +1015,109 @@ function exportBlob() {
   });
 }
 
-els.adjSave.addEventListener('click', async () => {
-  els.adjSave.disabled = true;
-  els.status.textContent = 'Сохранение PNG…';
-  try {
-    const blob = await exportBlob();
-    if (!blob) throw new Error('нет текстуры');
-    const r = await fetch('/save-texture', { method: 'POST', body: blob });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    await loadTexture();
-    resetAdjustments();
-    els.status.textContent = 'Base color сохранена на сервере, коррекция применена.';
-  } catch (e) {
-    els.status.textContent = 'Ошибка сохранения: ' + e;
-  } finally {
-    els.adjSave.disabled = false;
+let confirmResolve = null;
+const elsC = {
+  root: document.getElementById('confirm'),
+  text: document.getElementById('confirmText'),
+  save: document.getElementById('confirmSave'),
+  skip: document.getElementById('confirmSkip'),
+  cancel: document.getElementById('confirmCancel'),
+};
+function openConfirm(dirty) {
+  if (dirty) {
+    elsC.save.hidden = false;
+    elsC.text.textContent = 'Р’С‹ РїРµСЂРµС…РѕРґРёС‚Рµ Рє СЃР»РµРґСѓСЋС‰РµРјСѓ РґРµР№СЃС‚РІРёСЋ (РґРµС†РёРјР°С†РёСЏ). Р’ СЃС†РµРЅРµ РµСЃС‚СЊ РЅРµСЃРѕС…СЂР°РЅС‘РЅРЅС‹Рµ РёР·РјРµРЅРµРЅРёСЏ С†РІРµС‚РѕРєРѕСЂСЂРµРєС†РёРё base color. РЎРѕС…СЂР°РЅРёС‚СЊ РїРµСЂРµРґ РїСЂРѕРґРѕР»Р¶РµРЅРёРµРј?';
+  } else {
+    elsC.save.hidden = true;
+    elsC.text.textContent = 'Р’С‹ РїРµСЂРµС…РѕРґРёС‚Рµ Рє СЃР»РµРґСѓСЋС‰РµРјСѓ РґРµР№СЃС‚РІРёСЋ. РўРµРєСѓС‰РёР№ РјРµС€ РІРѕ РІСЊСЋРїРѕСЂС‚Рµ Р±СѓРґРµС‚ Р·Р°РјРµРЅС‘РЅ СЂРµР·СѓР»СЊС‚Р°С‚РѕРј РґРµС†РёРјР°С†РёРё.';
   }
-});
+  elsC.root.classList.add('open');
+  return new Promise((res) => { confirmResolve = res; });
+}
+function closeConfirm(v) {
+  elsC.root.classList.remove('open');
+  if (confirmResolve) { confirmResolve(v); confirmResolve = null; }
+}
+elsC.save.addEventListener('click', () => closeConfirm('save'));
+elsC.skip.addEventListener('click', () => closeConfirm('skip'));
+elsC.cancel.addEventListener('click', () => closeConfirm('cancel'));
 
-els.adjDownload.addEventListener('click', async () => {
-  els.adjDownload.disabled = true;
+let decimatedBlob = null;
+
+async function doDecimate() {
+  const f = elsD.file.files && elsD.file.files[0];
+  console.log('[doDecimate] file', f);
+  if (!f) { elsD.status.textContent = 'РІС‹Р±РµСЂРёС‚Рµ С„Р°Р№Р» РјРµС€Р°'; return; }
+
+  const ans = await openConfirm(adjDirty);
+  if (ans === 'cancel') return;
+  if (ans === 'save') { await saveTexture(); }
+
+  const fd = new FormData();
+  fd.append('mesh', f);
+  fd.append('mode', elsD.mode.value);
+  fd.append('ratio', elsD.ratio.value);
+  fd.append('iterations', elsD.iter.value);
+  fd.append('angle', elsD.angle.value);
+  fd.append('target', elsD.target.value);
+
+  elsD.btn.disabled = true;
+  elsD.exportGlb.disabled = true;
+  elsD.exportObj.disabled = true;
+  const t0 = Date.now();
+  elsD.status.textContent = 'Р”РµС†РёРјР°С†РёСЏвЂ¦ 0 СЃ';
+  const timer = setInterval(() => {
+    elsD.status.textContent = 'Р”РµС†РёРјР°С†РёСЏвЂ¦ ' + ((Date.now() - t0) / 1000).toFixed(0) + ' СЃ';
+  }, 500);
+
   try {
-    const blob = await exportBlob();
-    if (!blob) throw new Error('нет текстуры');
+    const r = await fetch('/decimate', { method: 'POST', body: fd });
+    clearInterval(timer);
+    if (!r.ok) {
+      let msg = r.status;
+      try { const j = await r.json(); msg = j.error || msg; if (j.log) elsD.status.textContent = msg + '\n' + j.log; } catch {}
+      elsD.status.textContent = 'РћС€РёР±РєР° РґРµС†РёРјР°С†РёРё: ' + msg;
+      return;
+    }
+    const info = JSON.parse(r.headers.get('X-Decimate-Info') || '{}');
+    const blob = await r.blob();
+    decimatedBlob = blob;
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'basecolor.png';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    try {
+      const gltf = await loader.loadAsync(url);
+      const root = gltf.scene || (gltf.scenes && gltf.scenes[0]);
+      if (root) {
+        fixTextureColorSpace(root);
+        ensureDefaultMaterial(root);
+        normalizeImportedMaterials(root);
+        setViewportRoot(root, false);
+      }
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+    elsD.exportGlb.disabled = !decimatedBlob;
+    elsD.exportObj.disabled = false;
+    adjDirty = false;
+    elsD.status.textContent =
+      'Р“РѕС‚РѕРІРѕ Р·Р° ' + (info.seconds ?? '?') + ' СЃ В· ' +
+      'РІРµСЂС€РёРЅ: ' + info.verts_before + ' в†’ ' + info.verts_after + ' В· ' +
+      'С‚СЂРµСѓРі.: ' + info.tris_before + ' в†’ ' + info.tris_after;
   } catch (e) {
-    els.status.textContent = 'Ошибка скачивания: ' + e;
+    clearInterval(timer);
+    elsD.status.textContent = 'РћС€РёР±РєР° РґРµС†РёРјР°С†РёРё: ' + e;
   } finally {
-    els.adjDownload.disabled = false;
+    clearInterval(timer);
+    elsD.btn.disabled = false;
   }
+}
+
+elsD.btn.addEventListener('click', doDecimate);
+elsD.exportGlb.addEventListener('click', () => { if (decimatedBlob) downloadBlob(decimatedBlob, 'decimated.glb'); });
+elsD.exportObj.addEventListener('click', () => {
+  const a = document.createElement('a');
+  a.href = '/decimated.obj?t=' + Date.now();
+  a.download = 'decimated.obj';
+  document.body.appendChild(a); a.click(); a.remove();
 });
 
 const tip = document.getElementById('tooltip');
@@ -901,6 +1281,33 @@ function fixTextureColorSpace(root) {
   });
 }
 
+function ensureDefaultMaterial(root) {
+  const DEFAULT_COLOR = new THREE.Color(0x888888);
+  const isDark = (c) => c && (c.r + c.g + c.b) / 3 < 0.15; // luminance < 0.15
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    if (!o.material) {
+      o.material = new THREE.MeshStandardMaterial({
+        color: DEFAULT_COLOR, roughness: 0.85, metalness: 0.0, side: THREE.DoubleSide,
+      });
+      return;
+    }
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    for (const m of mats) {
+      if (isDark(m.color)) m.color.copy(DEFAULT_COLOR);
+      if (m.isMeshPhongMaterial) {
+        m.specular.setHex(0x111111);
+        m.shininess = 30;
+      }
+      if (m.emissive && isDark(m.emissive)) {
+        m.emissive.setHex(0x000000);
+      }
+      m.side = THREE.DoubleSide;
+      m.needsUpdate = true;
+    }
+  });
+}
+
 function normalizeImportedMaterials(root) {
   root.traverse((o) => {
     const mats = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : [];
@@ -992,7 +1399,7 @@ function setPlaying(v) {
   if (v && (rigStatic || weightMode)) return;
   rigPlaying = v;
   rigAction.paused = !v;
-  elsAnim.play.textContent = v ? '⏸' : '▶';
+  elsAnim.play.textContent = v ? 'вЏё' : 'в–¶';
   if (v) {
     animClock.start();
     animClock.getDelta();
@@ -1137,6 +1544,7 @@ const elsW = {
   strengthLabel: document.getElementById('rigBrushStrength_v'),
   brushMode: document.getElementById('rigBrushMode'),
   normalize: document.getElementById('rigWeightNormalize'),
+  saveWeights: document.getElementById('rigWeightSave'),
   info: document.getElementById('rigWeightInfo'),
   exportGlb: document.getElementById('rigExportGlb'),
   exportFbx: document.getElementById('rigExportFbx'),
@@ -1351,7 +1759,7 @@ function normalizeAllWeights() {
   }
   updateWeightColors();
   updateWeightInfo();
-  elsW.info.textContent = (elsW.info.textContent ? elsW.info.textContent + ' · ' : '') + 'нормализовано вершин: ' + changed;
+  elsW.info.textContent = (elsW.info.textContent ? elsW.info.textContent + ' В· ' : '') + 'РЅРѕСЂРјР°Р»РёР·РѕРІР°РЅРѕ РІРµСЂС€РёРЅ: ' + changed;
 }
 
 function applyWeightVisuals(on) {
@@ -1385,7 +1793,7 @@ function populateBoneSelect() {
   const prev = weightBoneName;
   weightBoneName = names.includes(prev) ? prev : (names[0] || '');
   elsW.bone.innerHTML = '';
-  const list = names.length ? names : ['—'];
+  const list = names.length ? names : ['вЂ”'];
   for (const n of list) {
     const opt = document.createElement('option');
     opt.value = n;
@@ -1398,16 +1806,16 @@ function populateBoneSelect() {
 function updateWeightInfo() {
   let text = '';
   if (!weightMode) {
-    text = 'включите режим весов и выберите кость — затем ведите по модели с зажатой ЛКМ';
+    text = 'РІРєР»СЋС‡РёС‚Рµ СЂРµР¶РёРј РІРµСЃРѕРІ Рё РІС‹Р±РµСЂРёС‚Рµ РєРѕСЃС‚СЊ вЂ” Р·Р°С‚РµРј РІРµРґРёС‚Рµ РїРѕ РјРѕРґРµР»Рё СЃ Р·Р°Р¶Р°С‚РѕР№ Р›РљРњ';
   } else if (!rigRoot) {
-    text = 'модель не загружена';
+    text = 'РјРѕРґРµР»СЊ РЅРµ Р·Р°РіСЂСѓР¶РµРЅР°';
   } else if (!skinnedMeshes().length) {
-    text = 'в модели нет SkinnedMesh — веса недоступны';
+    text = 'РІ РјРѕРґРµР»Рё РЅРµС‚ SkinnedMesh вЂ” РІРµСЃР° РЅРµРґРѕСЃС‚СѓРїРЅС‹';
   } else {
-    text = 'кость: ' + (weightBoneName || '—') +
-      ' · кисть: рад. ' + Math.round(brushRadiusFrac * 100) + ' %' +
-      ' · сила ' + Math.round(brushStrength * 100) + ' %' +
-      ' · режим: ' + (brushMode === 'sub' ? 'вычесть' : 'добавить');
+    text = 'РєРѕСЃС‚СЊ: ' + (weightBoneName || 'вЂ”') +
+      ' В· РєРёСЃС‚СЊ: СЂР°Рґ. ' + Math.round(brushRadiusFrac * 100) + ' %' +
+      ' В· СЃРёР»Р° ' + Math.round(brushStrength * 100) + ' %' +
+      ' В· СЂРµР¶РёРј: ' + (brushMode === 'sub' ? 'РІС‹С‡РµСЃС‚СЊ' : 'РґРѕР±Р°РІРёС‚СЊ');
   }
   elsW.info.textContent = text;
 }
@@ -1420,6 +1828,7 @@ function refreshWeightUi() {
   elsW.strength.disabled = dis;
   elsW.brushMode.disabled = dis;
   elsW.normalize.disabled = dis;
+  elsW.saveWeights.disabled = dis;
   updateWeightInfo();
 }
 
@@ -1432,13 +1841,14 @@ function resetWeightState() {
   weightColorAttrs.clear();
   elsW.bone.innerHTML = '';
   const opt = document.createElement('option');
-  opt.textContent = '—';
+  opt.textContent = 'вЂ”';
   elsW.bone.appendChild(opt);
   elsW.bone.disabled = true;
   elsW.radius.disabled = true;
   elsW.strength.disabled = true;
   elsW.brushMode.disabled = true;
   elsW.normalize.disabled = true;
+  elsW.saveWeights.disabled = true;
   elsW.exportGlb.disabled = true;
   elsW.exportFbx.disabled = true;
   elsW.exportStatus.textContent = '';
@@ -1447,9 +1857,9 @@ function resetWeightState() {
 
 function setBrushControls(on) {
   if (on) {
-    controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
+    controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
   } else {
-    controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+    controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN };
   }
 }
 
@@ -1528,6 +1938,23 @@ elsW.normalize.addEventListener('click', () => {
   if (weightMode) normalizeAllWeights();
 });
 
+elsW.saveWeights?.addEventListener('click', async () => {
+  if (!rigRoot) return;
+  const wasDisabled = elsW.saveWeights.disabled;
+  elsW.saveWeights.disabled = true;
+  elsW.info.textContent = 'РЎРѕС…СЂР°РЅРµРЅРёРµ РІРµСЃРѕРІ (GLB)вЂ¦';
+  try {
+    const buf = await buildGlbBuffer();
+    const name = (rigFileBase || 'rig') + '_weights.glb';
+    downloadBlob(new Blob([buf], { type: 'model/gltf-binary' }), name);
+    elsW.info.textContent = 'Р’РµСЃР° СЃРѕС…СЂР°РЅРµРЅС‹: ' + name;
+  } catch (e) {
+    elsW.info.textContent = 'РћС€РёР±РєР° СЃРѕС…СЂР°РЅРµРЅРёСЏ: ' + (e && e.message ? e.message : e);
+  } finally {
+    elsW.saveWeights.disabled = wasDisabled;
+  }
+});
+
 function detachBoneVisuals() {
   const out = [];
   for (const o of rigBoneObjs) {
@@ -1575,13 +2002,13 @@ async function doExportGlb() {
   exportingNow = true;
   elsW.exportGlb.disabled = true;
   elsW.exportFbx.disabled = true;
-  elsW.exportStatus.textContent = 'Экспорт GLB…';
+  elsW.exportStatus.textContent = 'Р­РєСЃРїРѕСЂС‚ GLBвЂ¦';
   try {
     const buf = await buildGlbBuffer();
     downloadBlob(new Blob([buf], { type: 'model/gltf-binary' }), rigFileBase + '.glb');
-    elsW.exportStatus.textContent = 'GLB сохранён: ' + rigFileBase + '.glb';
+    elsW.exportStatus.textContent = 'GLB СЃРѕС…СЂР°РЅС‘РЅ: ' + rigFileBase + '.glb';
   } catch (e) {
-    elsW.exportStatus.textContent = 'Ошибка экспорта GLB: ' + (e && e.message ? e.message : e);
+    elsW.exportStatus.textContent = 'РћС€РёР±РєР° СЌРєСЃРїРѕСЂС‚Р° GLB: ' + (e && e.message ? e.message : e);
   } finally {
     exportingNow = false;
     elsW.exportGlb.disabled = !rigRoot;
@@ -1594,10 +2021,10 @@ async function doExportFbx() {
   exportingNow = true;
   elsW.exportGlb.disabled = true;
   elsW.exportFbx.disabled = true;
-  elsW.exportStatus.textContent = 'Экспорт GLB…';
+  elsW.exportStatus.textContent = 'Р­РєСЃРїРѕСЂС‚ GLBвЂ¦';
   try {
     const buf = await buildGlbBuffer();
-    elsW.exportStatus.textContent = 'Конвертация в FBX (Blender)…';
+    elsW.exportStatus.textContent = 'РљРѕРЅРІРµСЂС‚Р°С†РёСЏ РІ FBX (Blender)вЂ¦';
     const r = await fetch('/export-fbx', {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
@@ -1613,9 +2040,9 @@ async function doExportFbx() {
     }
     const blob = await r.blob();
     downloadBlob(blob, rigFileBase + '.fbx');
-    elsW.exportStatus.textContent = 'FBX сохранён: ' + rigFileBase + '.fbx';
+    elsW.exportStatus.textContent = 'FBX СЃРѕС…СЂР°РЅС‘РЅ: ' + rigFileBase + '.fbx';
   } catch (e) {
-    elsW.exportStatus.textContent = 'Ошибка экспорта FBX: ' + (e && e.message ? e.message : e);
+    elsW.exportStatus.textContent = 'РћС€РёР±РєР° СЌРєСЃРїРѕСЂС‚Р° FBX: ' + (e && e.message ? e.message : e);
   } finally {
     exportingNow = false;
     elsW.exportGlb.disabled = !rigRoot;
@@ -1649,7 +2076,7 @@ function onRigLoaded(file) {
 async function loadRigFile(file) {
   clearRig();
   elsRig.log.textContent = '';
-  elsRig.status.textContent = 'Загрузка модели…';
+  elsRig.status.textContent = 'Р—Р°РіСЂСѓР·РєР° РјРѕРґРµР»РёвЂ¦';
   const url = URL.createObjectURL(file);
   const ext = (file.name.split('.').pop() || '').toLowerCase();
   try {
@@ -1657,40 +2084,63 @@ async function loadRigFile(file) {
     let clips = [];
     if (ext === 'fbx') {
       root = await new FBXLoader().loadAsync(url);
+      // Apply FBX unit scale factor
+      const scale = root.userData?.unitScaleFactor ?? 1;
+      if (scale !== 1) {
+        root.scale.setScalar(scale);
+        console.log('[loadRigFile] applied FBX unitScaleFactor:', scale);
+      }
       clips = root.animations || [];
     } else {
       const gltf = await loader.loadAsync(url);
       root = gltf.scene || (gltf.scenes && gltf.scenes[0]);
       clips = gltf.animations || [];
     }
-    if (!root) throw new Error('модель не найдена в файле');
-    fixTextureColorSpace(root);
-    normalizeImportedMaterials(root);
+    if (!root) throw new Error('РјРѕРґРµР»СЊ РЅРµ РЅР°Р№РґРµРЅР° РІ С„Р°Р№Р»Рµ');
+fixTextureColorSpace(root);
+    ensureDefaultMaterial(root);
+    // Replace all materials with proper MeshStandardMaterial for consistent lighting
+    console.log('[loadRigFile] replacing materials, procRT:', !!procRT);
+    root.traverse((o) => {
+      if (o.isMesh) {
+        console.log('[loadRigFile] replacing material for:', o.name, 'old:', o.material?.type);
+        const mat = new THREE.MeshStandardMaterial({
+          color: 0x888888, roughness: 0.85, metalness: 0.0, side: THREE.DoubleSide,
+        });
+        if (procRT) mat.map = procRT.texture;
+        o.material = mat;
+        console.log('[loadRigFile] new material:', o.material.type, 'color:', o.material.color.getHexString());
+      }
+    });
+normalizeImportedMaterials(root);
     rigRoot = root;
     rigGroup.add(root);
     let meshCount = 0;
     root.traverse((o) => { if (o.isMesh) meshCount++; });
+    console.log('[loadRigFile] rigGroup children:', rigGroup.children.length, 'root children:', root.children.length);
+    root.traverse((o) => { if (o.isMesh) console.log('[loadRigFile] mesh:', o.name, 'material:', o.material?.type, 'color:', o.material?.color?.getHexString(), 'visible:', o.visible); });
     const skel = buildRigSkeleton(root);
     captureBindPose(root);
     setupAnimations(root, clips);
     if (rigStatic) setStaticMode(true);
     frameObject(root);
-    let msg = 'Модель загружена · мешей: ' + meshCount;
-    if (skel.bones > 0) msg += ' · костей: ' + skel.bones + ' · сегментов: ' + skel.segments;
-    else msg += ' · скелет не найден';
-    if (clips.length) msg += ' · анимаций: ' + clips.length;
+    console.log('[loadRigFile] after frameObject, camera:', camera.position.clone(), 'target:', controls.target.clone(), 'root pos:', root.position.clone());
+    let msg = 'РњРѕРґРµР»СЊ Р·Р°РіСЂСѓР¶РµРЅР° В· РјРµС€РµР№: ' + meshCount;
+    if (skel.bones > 0) msg += ' В· РєРѕСЃС‚РµР№: ' + skel.bones + ' В· СЃРµРіРјРµРЅС‚РѕРІ: ' + skel.segments;
+    else msg += ' В· СЃРєРµР»РµС‚ РЅРµ РЅР°Р№РґРµРЅ';
+    if (clips.length) msg += ' В· Р°РЅРёРјР°С†РёР№: ' + clips.length;
     elsRig.status.textContent = msg;
     onRigLoaded(file);
   } catch (e) {
     clearRig();
-    elsRig.status.textContent = 'Ошибка загрузки: ' + (e && e.message ? e.message : e);
+    elsRig.status.textContent = 'РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё: ' + (e && e.message ? e.message : e);
     elsRig.log.textContent = String((e && e.stack) || e);
   } finally {
     URL.revokeObjectURL(url);
   }
 }
 
-bindFile(elsRig.file, elsRig.name, 'выбрать…');
+bindFile(elsRig.file, elsRig.name, 'РІС‹Р±СЂР°С‚СЊвЂ¦');
 
 elsRig.file.addEventListener('change', () => {
   const f = elsRig.file.files && elsRig.file.files[0];
@@ -1746,3 +2196,4 @@ for (const t of tabs) t.addEventListener('click', () => switchRoom(t.dataset.roo
   controls.update();
   renderer.render(scene, camera);
 })();
+
