@@ -573,9 +573,11 @@ const els = {
   cageToggle: document.getElementById('cageToggle'),
   cageOpacity: document.getElementById('cageOpacity'),
   cageColor: document.getElementById('cageColor'),
-  adjSave: document.getElementById('adjSave'),
+adjSave: document.getElementById('adjSave'),
   adjDownload: document.getElementById('adjDownload'),
   adjReset: document.getElementById('adjReset'),
+  exportBakedGlb: document.getElementById('exportBakedGlb'),
+  exportBakedFbx: document.getElementById('exportBakedFbx'),
 };
 
 const elsD = {
@@ -969,7 +971,7 @@ async function bake() {
     const r = await fetch('/bake', { method: 'POST', body: fd });
     const data = await r.json();
     clearInterval(timer);
-    if (data.ok) {
+if (data.ok) {
       let meshCount = 0;
       try { meshCount = await loadModel(); } catch { /* ignore */ }
       await loadTexture();
@@ -977,6 +979,8 @@ async function bake() {
       els.status.textContent =
         'Р“РѕС‚РѕРІРѕ Р·Р° ' + data.seconds + ' СЃ В· РјРµС€РµР№: ' + meshCount +
         (info.texture ? ' В· С‚РµРєСЃС‚СѓСЂР°: ' + info.texture : '');
+      els.exportBakedGlb.disabled = false;
+      els.exportBakedFbx.disabled = false;
     } else {
       els.status.textContent = 'РћС€РёР±РєР° Р±РµР№РєР°';
       els.log.textContent = data.log || data.error || '';
@@ -991,6 +995,9 @@ async function bake() {
 }
 
 els.bake.addEventListener('click', bake);
+
+els.exportBakedGlb?.addEventListener('click', exportBakedGlb);
+els.exportBakedFbx?.addEventListener('click', exportBakedFbx);
 
 function exportBlob() {
   return new Promise((resolve) => {
@@ -1013,6 +1020,45 @@ function exportBlob() {
     if (previewCanvas.toBlob) previewCanvas.toBlob(finish, 'image/png');
     else finish(null);
   });
+}
+
+async function exportBakedGlb() {
+  if (!currentRoot) return;
+  els.exportBakedGlb.disabled = true;
+  els.status.textContent = 'Р­РєСЃРїРѕСЂС‚ GLBвЂ¦';
+  try {
+    const exporter = new GLTFExporter();
+    const glb = await exporter.parseAsync(currentRoot, { binary: true });
+    downloadBlob(new Blob([glb], { type: 'model/gltf-binary' }), 'baked_model.glb');
+    els.status.textContent = 'GLB СЃРѕС…СЂР°РЅРµРЅ';
+  } catch (e) {
+    els.status.textContent = 'РћС€РёР±РєР° СЌРєСЃРїРѕСЂС‚Р° GLB: ' + e;
+  } finally {
+    els.exportBakedGlb.disabled = false;
+  }
+}
+
+async function exportBakedFbx() {
+  if (!currentRoot) return;
+  els.exportBakedFbx.disabled = true;
+  els.status.textContent = 'Р­РєСЃРїРѕСЂС‚ FBX (Blender)вЂ¦';
+  try {
+    const exporter = new GLTFExporter();
+    const glb = await exporter.parseAsync(currentRoot, { binary: true });
+    const r = await fetch('/export-fbx', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: glb,
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const blob = await r.blob();
+    downloadBlob(blob, 'baked_model.fbx');
+    els.status.textContent = 'FBX СЃРѕС…СЂР°РЅРµРЅ';
+  } catch (e) {
+    els.status.textContent = 'РћС€РёР±РєР° СЌРєСЃРїРѕСЂС‚Р° FBX: ' + e;
+  } finally {
+    els.exportBakedFbx.disabled = false;
+  }
 }
 
 let confirmResolve = null;
