@@ -235,14 +235,11 @@
           <button type="button" class="clear" id="clearLow" title="Очистить low poly">×</button>
         </div>
         <div class="ctrl" id="fbxScaleRow" hidden>
-          <label>FBX scale <span class="val" id="fbxScale_v">1 (по умолчанию)</span></label>
+          <label>Единицы FBX <span class="val" id="fbxScale_v">см</span></label>
           <select id="fbxScale">
-            <option value="1">1 (по умолчанию)</option>
-            <option value="0.01">0.01 (cm → m)</option>
-            <option value="0.001">0.001 (mm → m)</option>
-            <option value="0.1">0.1</option>
-            <option value="10">10</option>
-            <option value="100">100 (m → cm)</option>
+            <option value="1">м</option>
+            <option value="0.01" selected>см</option>
+            <option value="0.001">мм</option>
           </select>
         </div>
         <div class="file-row">
@@ -566,11 +563,8 @@
             <option value="sub">Вычесть вес</option>
           </select>
         </div>
-        <div class="ctrl" data-tip="<b>Нормализовать веса.</b> При рисовании кистью сумма 4 весов вершины может уйти от 1.0 (напр. 0.97 или 1.03). Это ломает деформацию: кости тянут вершину некорректно.<br>Кнопка проходит по всем вершинам SkinnedMesh и приводит сумму весов к 1.0.<br>Нужно нажимать перед экспортом или проверкой анимации, если рисовали долго.">
-          <div class="btn-row" style="margin-bottom: 8px">
-            <button id="rigWeightNormalize" class="secondary" disabled>Нормализовать всё</button>
-            <button id="rigWeightSave" class="secondary" disabled>Сохранить веса</button>
-          </div>
+        <div class="ctrl" data-tip="<b>Применить веса.</b> Сначала автоматически нормализует сумму весов каждой вершины к 1.0 (как кнопка «Нормализовать всё» раньше), затем сохраняет модель с весами в GLB-файл.<br>Нормализация выполняется каждый раз при нажатии — отдельное нажатие не требуется.">
+          <button id="rigWeightSave" class="secondary" disabled>Применить веса</button>
         </div>
         <div id="rigWeightInfo">включите режим весов и выберите кость — затем ведите по модели с зажатой ЛКМ</div>
       </div>
@@ -611,6 +605,6 @@
   }
 }
 </script>
-<script type="module" src="./app.js?v=20261019i"></script>
+<script type="module" src="./app.js?v=20261020c"></script>
 </body>
 </html>

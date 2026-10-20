@@ -77,6 +77,15 @@ def setup_gpu(scene):
         scene.cycles.device = "CPU"
 
 
+def mesh_stats(objs):
+    polys = tris = verts = 0
+    for o in objs:
+        verts += len(o.data.vertices)
+        polys += len(o.data.polygons)
+        tris += sum(max(len(p.vertices) - 2, 0) for p in o.data.polygons)
+    return {"polys": polys, "tris": tris, "verts": verts}
+
+
 def main(cfg):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
@@ -159,6 +168,8 @@ def main(cfg):
         "low_objects": [o.name for o in low_objs],
         "texture": image.name,
         "resolution": res,
+        "low_stats": mesh_stats(low_objs),
+        "high_stats": mesh_stats(high_objs),
     }
     print("RESULT " + json.dumps(result))
 

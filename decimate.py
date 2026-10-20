@@ -24,10 +24,12 @@ def import_model(path):
 def mesh_stats(objs):
     verts = 0
     tris = 0
+    polys = 0
     for o in objs:
         verts += len(o.data.vertices)
+        polys += len(o.data.polygons)
         tris += sum(max(len(p.vertices) - 2, 0) for p in o.data.polygons)
-    return verts, tris
+    return verts, tris, polys
 
 
 def apply_decimate(ob, mode, cfg, obj_index=0, total_objs=1):
@@ -70,12 +72,12 @@ def main(cfg):
     if not objs:
         raise RuntimeError("не найдено мешей в файле")
 
-    v0, t0 = mesh_stats(objs)
+    v0, t0, p0 = mesh_stats(objs)
     mode = cfg.get("mode", "COLLAPSE")
     n_objs = len(objs)
     for i, ob in enumerate(objs):
         apply_decimate(ob, mode, cfg, i, n_objs)
-    v1, t1 = mesh_stats(objs)
+    v1, t1, p1 = mesh_stats(objs)
 
     out_glb = cfg["out_glb"]
     out_obj = cfg.get("out_obj")
@@ -99,6 +101,8 @@ def main(cfg):
         "verts_after": v1,
         "tris_before": t0,
         "tris_after": t1,
+        "polys_before": p0,
+        "polys_after": p1,
     }))
 
 

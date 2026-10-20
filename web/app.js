@@ -392,6 +392,34 @@ function loadTexture() {
   });
 }
 
+// Считает полигоны/вершины из сырого OBJ (строка "f" = полигон, n вершин → n-2 треугольника).
+// GLB/FBX/STL не парсим — там loader отдаёт уже триангулированную геометрию.
+// Стриминг: файл может быть 100+ МБ, целиком в память его не грузим.
+async function countObjStats(file) {
+  const reader = file.stream().getReader();
+  const decoder = new TextDecoder();
+  let tail = '', polys = 0, verts = 0, tris = 0;
+  const handle = (line) => {
+    if (line.startsWith('v ')) verts++;
+    else if (line.startsWith('f ')) {
+      const n = line.trim().split(/\s+/).length - 1;
+      polys++;
+      tris += Math.max(0, n - 2);
+    }
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    const text = tail + chunk;
+    const lines = text.split('\n');
+    tail = lines.pop() || '';
+    for (const line of lines) handle(line);
+  }
+  if (tail) handle(tail);
+  return { polys, tris, verts };
+}
+
 function frameObject(root) {
   const box = new THREE.Box3().setFromObject(root);
   const size = box.getSize(new THREE.Vector3());
@@ -414,17 +442,24 @@ function updateMeshStats(root) {
   const el = document.getElementById('meshStats');
   if (!el) return;
   if (!root) { el.classList.remove('visible'); el.textContent = ''; return; }
-  let verts = 0, tris = 0, meshes = 0;
+  let verts = 0, tris = 0;
   root.traverse((o) => {
     if (o.isMesh && o.geometry) {
-      meshes++;
       verts += o.geometry.attributes.position?.count || 0;
       const idx = o.geometry.index;
       if (idx) tris += idx.count / 3;
       else tris += (o.geometry.attributes.position?.count || 0) / 3;
     }
   });
-  el.textContent = `Tris: ${Math.round(tris)} | Verts: ${verts}`;
+  tris = Math.round(tris);
+  // meshStats: {polys, tris, verts} из Blender или парсинга OBJ; GLB/STL триангулированы — polys = tris
+  const s = root.userData?.meshStats;
+  if (s) {
+    if (s.verts != null) verts = s.verts;
+    if (s.tris != null) tris = s.tris;
+  }
+  const polys = s?.polys ?? root.userData?.polyCount ?? tris;
+  el.textContent = `Polys: ${polys} | Tris: ${tris} | Verts: ${verts}`;
   el.classList.add('visible');
 }
 
@@ -505,12 +540,17 @@ function loadMeshFile(file, userScale = 1) {
         root.scale.setScalar(root.scale.x * userScale);
         console.log('[loadMeshFile] applied user scale:', userScale);
       }
-      // Выровнять: низ bounding box ровно на y=0 (пивот FBX часто в центре модели)
+      // Выровнять: низ bounding box ровно на y=0 (пивот FBX часто в центре модели),
+      // геометрию центрировать по X/Z относительно сетки (иначе OBJ смещён от начала координат)
       root.updateMatrixWorld(true);
       const loadBox = new THREE.Box3().setFromObject(root);
       if (isFinite(loadBox.min.y)) {
         root.position.y -= loadBox.min.y;
-        console.log('[loadMeshFile] aligned min.y to 0 (was', loadBox.min.y.toFixed(4), ')');
+        const cx = (loadBox.min.x + loadBox.max.x) / 2;
+        const cz = (loadBox.min.z + loadBox.max.z) / 2;
+        root.position.x -= cx;
+        root.position.z -= cz;
+        console.log('[loadMeshFile] aligned min.y to 0 (was', loadBox.min.y.toFixed(4), '), centered X/Z (was', cx.toFixed(4), cz.toFixed(4), ')');
       }
       let meshCount = 0;
       root.traverse((o) => {
@@ -526,6 +566,13 @@ function loadMeshFile(file, userScale = 1) {
       });
       console.log('[loadMeshFile] meshes', meshCount);
       setViewportRoot(root, false);
+      if (ext === 'obj') {
+        // Полигоны считаем из сырого текста (async), статистику дописываем после
+        countObjStats(file).then((st) => {
+          root.userData.meshStats = st;
+          if (root === currentRoot) updateMeshStats(root);
+        }).catch(() => {});
+      }
       resolve(meshCount);
     }, undefined, (err) => {
       console.error('[loadMeshFile] error', err);
@@ -635,7 +682,7 @@ bindFile(els.fileLow, els.lowName, 'РІС‹Р±СЂР°С‚СЊвЂ¦', () =>
   const isFBX = f && f.name.toLowerCase().endsWith('.fbx');
   if (els.fbxScaleRow) els.fbxScaleRow.hidden = !isFBX;
   if (f && currentRoom === 'bake') {
-    const scale = isFBX ? parseFloat(els.fbxScale?.value ?? '1') : 1;
+    const scale = isFBX ? parseFloat(els.fbxScale?.value ?? '0.01') : 1;
     loadMeshFile(f, scale).catch(e => els.status.textContent = 'РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё low-poly: ' + e);
   }
 });
@@ -985,6 +1032,10 @@ if (data.ok) {
       try { meshCount = await loadModel(); } catch { /* ignore */ }
       await loadTexture();
       const info = data.info || {};
+      if (currentRoot && info.low_stats) {
+        currentRoot.userData.meshStats = info.low_stats;
+        updateMeshStats(currentRoot);
+      }
       els.status.textContent =
         'Р“РѕС‚РѕРІРѕ Р·Р° ' + data.seconds + ' СЃ В· РјРµС€РµР№: ' + meshCount +
         (info.texture ? ' В· С‚РµРєСЃС‚СѓСЂР°: ' + info.texture : '');
@@ -1145,6 +1196,9 @@ async function doDecimate() {
         fixTextureColorSpace(root);
         ensureDefaultMaterial(root);
         normalizeImportedMaterials(root);
+        if (info.polys_after != null) {
+          root.userData.meshStats = { polys: info.polys_after, tris: info.tris_after, verts: info.verts_after };
+        }
         setViewportRoot(root, false);
       }
     } finally {
@@ -1155,6 +1209,8 @@ async function doDecimate() {
     adjDirty = false;
     elsD.status.textContent =
       'Р“РѕС‚РѕРІРѕ Р·Р° ' + (info.seconds ?? '?') + ' СЃ В· ' +
+      (info.polys_before != null
+        ? 'РїРѕР»РёРіРѕРЅРѕРІ: ' + info.polys_before + ' в†’ ' + info.polys_after + ' В· ' : '') +
       'РІРµСЂС€РёРЅ: ' + info.verts_before + ' в†’ ' + info.verts_after + ' В· ' +
       'С‚СЂРµСѓРі.: ' + info.tris_before + ' в†’ ' + info.tris_after;
   } catch (e) {
@@ -1598,7 +1654,6 @@ const elsW = {
   strength: document.getElementById('rigBrushStrength'),
   strengthLabel: document.getElementById('rigBrushStrength_v'),
   brushMode: document.getElementById('rigBrushMode'),
-  normalize: document.getElementById('rigWeightNormalize'),
   saveWeights: document.getElementById('rigWeightSave'),
   info: document.getElementById('rigWeightInfo'),
   exportGlb: document.getElementById('rigExportGlb'),
@@ -1813,8 +1868,7 @@ function normalizeAllWeights() {
     sw.needsUpdate = true;
   }
   updateWeightColors();
-  updateWeightInfo();
-  elsW.info.textContent = (elsW.info.textContent ? elsW.info.textContent + ' В· ' : '') + 'РЅРѕСЂРјР°Р»РёР·РѕРІР°РЅРѕ РІРµСЂС€РёРЅ: ' + changed;
+  return changed;
 }
 
 function applyWeightVisuals(on) {
@@ -1882,7 +1936,6 @@ function refreshWeightUi() {
   elsW.radius.disabled = dis;
   elsW.strength.disabled = dis;
   elsW.brushMode.disabled = dis;
-  elsW.normalize.disabled = dis;
   elsW.saveWeights.disabled = dis;
   updateWeightInfo();
 }
@@ -1902,7 +1955,6 @@ function resetWeightState() {
   elsW.radius.disabled = true;
   elsW.strength.disabled = true;
   elsW.brushMode.disabled = true;
-  elsW.normalize.disabled = true;
   elsW.saveWeights.disabled = true;
   elsW.exportGlb.disabled = true;
   elsW.exportFbx.disabled = true;
@@ -1989,22 +2041,21 @@ elsW.brushMode.addEventListener('change', () => {
   updateWeightInfo();
 });
 
-elsW.normalize.addEventListener('click', () => {
-  if (weightMode) normalizeAllWeights();
-});
-
 elsW.saveWeights?.addEventListener('click', async () => {
   if (!rigRoot) return;
   const wasDisabled = elsW.saveWeights.disabled;
   elsW.saveWeights.disabled = true;
-  elsW.info.textContent = 'Экспорт весов (GLB)...';
+  elsW.info.textContent = 'Применение весов (GLB)...';
   try {
+    // Автонормализация весов перед применением (кнопка «Нормализовать всё» удалена)
+    const normChanged = normalizeAllWeights();
     const buf = await buildGlbBuffer();
     const name = (rigFileBase || 'rig') + '_weights.glb';
     downloadBlob(new Blob([buf], { type: 'model/gltf-binary' }), name);
-    elsW.info.textContent = 'Веса сохранены: ' + name;
+    elsW.info.textContent = 'Веса применены: ' + name +
+      (normChanged > 0 ? ' · нормализовано вершин: ' + normChanged : '');
   } catch (e) {
-    elsW.info.textContent = 'Ошибка сохранения: ' + (e && e.message ? e.message : e);
+    elsW.info.textContent = 'Ошибка применения весов: ' + (e && e.message ? e.message : e);
   } finally {
     elsW.saveWeights.disabled = wasDisabled;
   }
@@ -2178,6 +2229,7 @@ normalizeImportedMaterials(root);
     setupAnimations(root, clips);
     if (rigStatic) setStaticMode(true);
     frameObject(root);
+    updateMeshStats(root);
     console.log('[loadRigFile] after frameObject, camera:', camera.position.clone(), 'target:', controls.target.clone(), 'root pos:', root.position.clone());
     let msg = 'РњРѕРґРµР»СЊ Р·Р°РіСЂСѓР¶РµРЅР° В· РјРµС€РµР№: ' + meshCount;
     if (skel.bones > 0) msg += ' В· РєРѕСЃС‚РµР№: ' + skel.bones + ' В· СЃРµРіРјРµРЅС‚РѕРІ: ' + skel.segments;
@@ -2239,6 +2291,7 @@ function switchRoom(name) {
     elsRig.gridToggle.checked = sceneGrid.visible;
     if (rigRoot) frameObject(rigRoot);
   }
+  updateMeshStats(name === 'rig' ? rigRoot : currentRoot);
 }
 
 for (const t of tabs) t.addEventListener('click', () => switchRoom(t.dataset.room));
