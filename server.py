@@ -8,6 +8,46 @@ import threading
 import time
 from email.parser import BytesParser
 from email.policy import default
+from typing import Any, TypedDict, cast
+
+
+class MultipartPart(TypedDict, total=False):
+    filename: str | None
+    data: bytes | None
+
+
+class MeshStats(TypedDict):
+    verts: int
+    tris: int
+    polys: int
+
+
+class BakeCfg(TypedDict):
+    low: str
+    high: str
+    texture: str | None
+    cage_extrusion: float
+    max_ray_distance: float
+    margin: int
+    resolution: int
+    out_png: str
+    out_glb: str
+
+
+class DecimateCfg(TypedDict):
+    in_: str
+    mode: str
+    ratio: float
+    iterations: int
+    angle: float
+    out_glb: str
+    out_obj: str
+
+
+class ExportCfg(TypedDict):
+    in_: str
+    out: str
+
 
 BLENDER = r"C:\Program Files\Blender Foundation\Blender 5.0\blender.exe"
 BASE = r"C:\Users\user\Desktop\bake"
@@ -27,55 +67,76 @@ decimate_lock = threading.Lock()
 os.makedirs(UPLOADS, exist_ok=True)
 
 
-def parse_multipart(body, boundary):
+def parse_multipart(body: bytes, boundary: str) -> dict[str, MultipartPart]:
     raw = b"Content-Type: multipart/form-data; boundary=" + boundary.encode() + b"\r\n\r\n" + body
     msg = BytesParser(policy=default).parsebytes(raw)
-    out = {}
+    out: dict[str, MultipartPart] = {}
     for part in msg.iter_parts():
         name = part.get_param("name", header="content-disposition")
         if not name:
             continue
-        out[name] = {
+        data = part.get_payload(decode=True)
+        out[str(name)] = {
             "filename": part.get_filename(),
-            "data": part.get_payload(decode=True),
+            "data": data if isinstance(data, bytes) else None,
         }
     return out
 
 
-def safe_name(name):
+def safe_name(name: str | None) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", os.path.basename(name or "file"))
 
 
-def save_upload(field, dest_dir):
+def save_upload(field: MultipartPart | None, dest_dir: str) -> str | None:
     if not field or not field.get("data"):
+        return None
+    data = field["data"]
+    if data is None:
         return None
     fn = safe_name(field.get("filename") or "upload.bin")
     path = os.path.join(dest_dir, fn)
     with open(path, "wb") as f:
-        f.write(field["data"])
+        f.write(data)
     return path
 
 
+def part_field(parts: dict[str, MultipartPart], name: str, default: str) -> str:
+    p = parts.get(name)
+    if not p or not p.get("data"):
+        return default
+    return cast(bytes, p["data"]).decode("utf-8", "ignore").strip()
+
+
+def extract_result_info(stdout: str) -> dict[str, Any]:
+    for line in stdout.splitlines():
+        if line.startswith("RESULT "):
+            try:
+                return cast(dict[str, Any], json.loads(line[len("RESULT "):]))
+            except Exception:
+                pass
+    return {}
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
-    def __init__(self, *a, **k):
+    def __init__(self, *a: Any, **k: Any) -> None:
         super().__init__(*a, directory=WEB, **k)
 
-    def log_message(self, *a):
+    def log_message(self, *a: Any) -> None:
         pass
 
-    def guess_type(self, path):
+    def guess_type(self, path: str | os.PathLike[str]) -> str:
         t = super().guess_type(path)
         if t.startswith("text/") or t in ("application/javascript", "application/json"):
             t += "; charset=utf-8"
         return t
 
-    def end_headers(self):
+    def end_headers(self) -> None:
         self.send_header("Cache-Control", "no-store, must-revalidate")
         self.send_header("Pragma", "no-cache")
         self.send_header("Expires", "0")
         super().end_headers()
 
-    def do_GET(self):
+    def do_GET(self) -> None:
         path = self.path.split("?")[0]
         if path == "/texture.png":
             return self.serve_file(OUT_TEX, "image/png")
@@ -83,9 +144,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.serve_file(os.path.join(UPLOADS, "_decimate.glb"), "model/gltf-binary")
         if path == "/decimated.obj":
             return self.serve_file(os.path.join(UPLOADS, "_decimate.obj"), "text/plain; charset=utf-8")
-        return super().do_GET()
+        super().do_GET()
 
-    def serve_file(self, path, ctype):
+    def serve_file(self, path: str, ctype: str) -> None:
         if not os.path.exists(path):
             self.send_error(404)
             return
@@ -98,203 +159,193 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def do_POST(self):
+    def do_POST(self) -> None:
         path = self.path.split("?")[0]
-        if path == "/bake":
-            return self.do_bake()
-        if path == "/save-texture":
-            return self.do_save_texture()
-        if path == "/export-fbx":
-            return self.do_export_fbx()
-        if path == "/decimate":
-            return self.do_decimate()
-        if path == "/shutdown":
-            return self.do_shutdown()
-        if path == "/heartbeat":
-            return self.do_heartbeat()
+        routes: dict[str, Any] = {
+            "/bake": self.do_bake,
+            "/save-texture": self.do_save_texture,
+            "/export-fbx": self.do_export_fbx,
+            "/decimate": self.do_decimate,
+            "/shutdown": self.do_shutdown,
+            "/heartbeat": self.do_heartbeat,
+        }
+        handler = routes.get(path)
+        if handler:
+            handler()
+            return
         self.send_error(404)
 
-    def do_heartbeat(self):
-        self.reply(200, {"ok": True})
-
-    def do_shutdown(self):
-        self.reply(200, {"ok": True})
-        # shutdown after response sent
-        threading.Thread(target=lambda: (time.sleep(0.5), os._exit(0))).start()
-
-    def do_export_fbx(self):
+    def read_body(self) -> bytes:
         length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length) if length else b""
+        return self.rfile.read(length) if length else b""
+
+    def do_heartbeat(self) -> None:
+        self.reply(200, {"ok": True})
+
+    def do_shutdown(self) -> None:
+        self.reply(200, {"ok": True})
+
+        def _exit() -> None:
+            time.sleep(0.5)
+            os._exit(0)
+
+        # shutdown after response sent
+        threading.Thread(target=_exit).start()
+
+    def do_export_fbx(self) -> None:
+        body = self.read_body()
         if len(body) < 20:
             return self.reply(400, {"ok": False, "error": "пустое тело (нужен GLB)"})
         if not export_lock.acquire(blocking=False):
             return self.reply(409, {"ok": False, "error": "конвертация уже выполняется"})
         try:
-            in_path = os.path.join(UPLOADS, "_export_tmp.glb")
-            out_path = os.path.join(UPLOADS, "_export_tmp.fbx")
-            with open(in_path, "wb") as f:
-                f.write(body)
-            cfg = {"in": in_path, "out": out_path}
-            p = subprocess.run(
-                [BLENDER, "--background", "--python", EXPORT_SCRIPT, "--", json.dumps(cfg)],
-                capture_output=True, text=True,
-            )
-            if "FBX_OK" not in p.stdout or not os.path.exists(out_path):
-                log = (p.stdout + p.stderr)[-4000:]
-                return self.reply(500, {"ok": False, "error": "Blender: конвертация не удалась", "log": log})
-            with open(out_path, "rb") as f:
-                data = f.read()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/octet-stream")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Content-Disposition", 'attachment; filename="model.fbx"')
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(data)
+            self.run_blender_export(body)
         finally:
             export_lock.release()
 
-    def do_decimate(self):
-        ctype = self.headers.get("Content-Type", "")
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length) if length else b""
+    def run_blender_export(self, body: bytes) -> None:
+        in_path = os.path.join(UPLOADS, "_export_tmp.glb")
+        out_path = os.path.join(UPLOADS, "_export_tmp.fbx")
+        with open(in_path, "wb") as f:
+            f.write(body)
+        cfg = {"in": in_path, "out": out_path}
+        p = subprocess.run(
+            [BLENDER, "--background", "--python", EXPORT_SCRIPT, "--", json.dumps(cfg)],
+            capture_output=True, text=True,
+        )
+        if "FBX_OK" not in p.stdout or not os.path.exists(out_path):
+            log = (p.stdout + p.stderr)[-4000:]
+            return self.reply(500, {"ok": False, "error": "Blender: конвертация не удалась", "log": log})
+        with open(out_path, "rb") as f:
+            data = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", 'attachment; filename="model.fbx"')
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
 
+    def do_decimate(self) -> None:
+        ctype = self.headers.get("Content-Type", "")
+        body = self.read_body()
         if "multipart/form-data" not in ctype:
             return self.reply(400, {"ok": False, "error": "expected multipart/form-data"})
-
         if not decimate_lock.acquire(blocking=False):
             return self.reply(409, {"ok": False, "error": "децимация уже выполняется"})
         try:
-            m = re.search(r"boundary=([^;]+)", ctype)
-            boundary = m.group(1).strip().strip('"')
-            parts = parse_multipart(body, boundary)
-
-            src = save_upload(parts.get("mesh"), UPLOADS)
-            if not src:
-                return self.reply(400, {"ok": False, "error": "нужен файл меша"})
-
-            def field(name, default):
-                p = parts.get(name)
-                if not p or not p.get("data"):
-                    return default
-                return p["data"].decode("utf-8", "ignore").strip()
-
-            out_glb = os.path.join(UPLOADS, "_decimate.glb")
-            out_obj = os.path.join(UPLOADS, "_decimate.obj")
-            cfg = {
-                "in": src,
-                "mode": field("mode", "COLLAPSE"),
-                "ratio": float(field("ratio", 0.5)),
-                "iterations": int(float(field("iterations", 1))),
-                "angle": float(field("angle", 5.0)),
-                "out_glb": out_glb,
-                "out_obj": out_obj,
-            }
-
-            t0 = time.time()
-            p = subprocess.run(
-                [BLENDER, "--background", "--python", DECIMATE_SCRIPT, "--", json.dumps(cfg)],
-                capture_output=True, text=True,
-            )
-            if "DECIMATE_OK" not in p.stdout or not os.path.exists(out_glb):
-                log = (p.stdout + p.stderr)[-4000:]
-                return self.reply(500, {"ok": False, "error": "Blender: децимация не удалась", "log": log})
-
-            info = {}
-            for line in p.stdout.splitlines():
-                if line.startswith("RESULT "):
-                    try:
-                        info = json.loads(line[len("RESULT "):])
-                    except Exception:
-                        pass
-            info["seconds"] = round(time.time() - t0, 1)
-
-            with open(out_glb, "rb") as f:
-                data = f.read()
-            self.send_response(200)
-            self.send_header("Content-Type", "model/gltf-binary")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("X-Decimate-Info", json.dumps(info))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(data)
+            self.run_decimate(body, ctype)
         finally:
             decimate_lock.release()
 
-    def do_save_texture(self):
-        length = int(self.headers.get("Content-Length", 0))
-        data = self.rfile.read(length) if length else b""
+    def run_decimate(self, body: bytes, ctype: str) -> None:
+        m = re.search(r"boundary=([^;]+)", ctype)
+        if not m:
+            return self.reply(400, {"ok": False, "error": "no boundary"})
+        boundary = m.group(1).strip().strip('"')
+        parts = parse_multipart(body, boundary)
+
+        src = save_upload(parts.get("mesh"), UPLOADS)
+        if not src:
+            return self.reply(400, {"ok": False, "error": "нужен файл меша"})
+
+        out_glb = os.path.join(UPLOADS, "_decimate.glb")
+        out_obj = os.path.join(UPLOADS, "_decimate.obj")
+        cfg = {
+            "in": src,
+            "mode": part_field(parts, "mode", "COLLAPSE"),
+            "ratio": float(part_field(parts, "ratio", "0.5")),
+            "iterations": int(float(part_field(parts, "iterations", "1"))),
+            "angle": float(part_field(parts, "angle", "5.0")),
+            "out_glb": out_glb,
+            "out_obj": out_obj,
+        }
+
+        t0 = time.time()
+        p = subprocess.run(
+            [BLENDER, "--background", "--python", DECIMATE_SCRIPT, "--", json.dumps(cfg)],
+            capture_output=True, text=True,
+        )
+        if "DECIMATE_OK" not in p.stdout or not os.path.exists(out_glb):
+            log = (p.stdout + p.stderr)[-4000:]
+            return self.reply(500, {"ok": False, "error": "Blender: децимация не удалась", "log": log})
+
+        info = extract_result_info(p.stdout)
+        info["seconds"] = round(time.time() - t0, 1)
+
+        with open(out_glb, "rb") as f:
+            data = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", "model/gltf-binary")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Decimate-Info", json.dumps(info))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_save_texture(self) -> None:
+        data = self.read_body()
         if not data:
             return self.reply(400, {"ok": False, "error": "empty body"})
         with open(OUT_TEX, "wb") as f:
             f.write(data)
         self.reply(200, {"ok": True, "bytes": len(data)})
 
-    def do_bake(self):
+    def do_bake(self) -> None:
         ctype = self.headers.get("Content-Type", "")
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length) if length else b""
-
+        body = self.read_body()
         if "multipart/form-data" not in ctype:
             return self.reply(400, {"ok": False, "error": "expected multipart/form-data"})
-
         if not bake_lock.acquire(blocking=False):
             return self.reply(409, {"ok": False, "error": "bake already running"})
         try:
-            m = re.search(r"boundary=([^;]+)", ctype)
-            boundary = m.group(1).strip().strip('"')
-            parts = parse_multipart(body, boundary)
-
-            low = save_upload(parts.get("low"), UPLOADS)
-            high = save_upload(parts.get("high"), UPLOADS)
-            texture = save_upload(parts.get("texture"), UPLOADS)
-
-            if not low or not high:
-                return self.reply(400, {"ok": False, "error": "нужны файлы low и high"})
-
-            def field(name, default):
-                p = parts.get(name)
-                if not p or not p.get("data"):
-                    return default
-                return p["data"].decode("utf-8", "ignore").strip()
-
-            cfg = {
-                "low": low,
-                "high": high,
-                "texture": texture,
-                "cage_extrusion": float(field("cage_extrusion", 0.008)),
-                "max_ray_distance": float(field("max_ray_distance", 0.012)),
-                "margin": int(float(field("margin", 32))),
-                "resolution": int(float(field("resolution", 4096))),
-                "out_png": OUT_TEX,
-                "out_glb": OUT_GLB,
-            }
-
-            t0 = time.time()
-            p = subprocess.run(
-                [BLENDER, "--background", "--python", BAKE_SCRIPT, "--", json.dumps(cfg)],
-                capture_output=True, text=True,
-            )
-            ok = "BAKE_OK" in p.stdout
-            log = (p.stdout + p.stderr)[-4000:]
-            info = {}
-            for line in p.stdout.splitlines():
-                if line.startswith("RESULT "):
-                    try:
-                        info = json.loads(line[len("RESULT "):])
-                    except Exception:
-                        pass
-            resp = {
-                "ok": ok,
-                "seconds": round(time.time() - t0, 1),
-                "info": info,
-                "log": log,
-            }
-            self.reply(200 if ok else 500, resp)
+            self.run_bake(body, ctype)
         finally:
             bake_lock.release()
 
-    def reply(self, code, obj):
+    def run_bake(self, body: bytes, ctype: str) -> None:
+        m = re.search(r"boundary=([^;]+)", ctype)
+        if not m:
+            return self.reply(400, {"ok": False, "error": "no boundary"})
+        boundary = m.group(1).strip().strip('"')
+        parts = parse_multipart(body, boundary)
+
+        low = save_upload(parts.get("low"), UPLOADS)
+        high = save_upload(parts.get("high"), UPLOADS)
+        texture = save_upload(parts.get("texture"), UPLOADS)
+
+        if not low or not high:
+            return self.reply(400, {"ok": False, "error": "нужны файлы low и high"})
+
+        cfg = {
+            "low": low,
+            "high": high,
+            "texture": texture,
+            "cage_extrusion": float(part_field(parts, "cage_extrusion", "0.008")),
+            "max_ray_distance": float(part_field(parts, "max_ray_distance", "0.012")),
+            "margin": int(float(part_field(parts, "margin", "32"))),
+            "resolution": int(float(part_field(parts, "resolution", "4096"))),
+            "out_png": OUT_TEX,
+            "out_glb": OUT_GLB,
+        }
+
+        t0 = time.time()
+        p = subprocess.run(
+            [BLENDER, "--background", "--python", BAKE_SCRIPT, "--", json.dumps(cfg)],
+            capture_output=True, text=True,
+        )
+        ok = "BAKE_OK" in p.stdout
+        log = (p.stdout + p.stderr)[-4000:]
+        info = extract_result_info(p.stdout)
+        resp = {
+            "ok": ok,
+            "seconds": round(time.time() - t0, 1),
+            "info": info,
+            "log": log,
+        }
+        self.reply(200 if ok else 500, resp)
+
+    def reply(self, code: int, obj: dict[str, Any]) -> None:
         data = json.dumps(obj).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")

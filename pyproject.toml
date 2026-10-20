@@ -1,0 +1,11 @@
+[tool.mypy]
+python_version = "3.12"
+strict = false
+warn_return_any = true
+warn_unused_configs = true
+files = ["server.py"]
+exclude = ["web/", "__pycache__/"]
+
+[[tool.mypy.overrides]]
+module = "bpy.*"
+ignore_missing_imports = true
