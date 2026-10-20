@@ -424,7 +424,7 @@ function updateMeshStats(root) {
       else tris += (o.geometry.attributes.position?.count || 0) / 3;
     }
   });
-  el.textContent = `Meshes: ${meshes} | Verts: ${verts} | Tris: ${Math.round(tris)}`;
+  el.textContent = `Tris: ${Math.round(tris)} | Verts: ${verts}`;
   el.classList.add('visible');
 }
 
@@ -437,7 +437,7 @@ function setViewportRoot(root, frame = true) {
     currentRoot.traverse((o) => { if (o.isMesh && o.geometry) o.geometry.dispose(); });
   }
   currentRoot = root;
-  root.visible = currentRoom === 'bake';
+  root.visible = currentRoom === 'bake' || currentRoom === 'decimate';
   scene.add(root);
   buildWires(root);
   if (cageOn) buildCage(root, cageExtrusion());
@@ -504,6 +504,13 @@ function loadMeshFile(file, userScale = 1) {
       if (userScale !== 1) {
         root.scale.setScalar(root.scale.x * userScale);
         console.log('[loadMeshFile] applied user scale:', userScale);
+      }
+      // Выровнять: низ bounding box ровно на y=0 (пивот FBX часто в центре модели)
+      root.updateMatrixWorld(true);
+      const loadBox = new THREE.Box3().setFromObject(root);
+      if (isFinite(loadBox.min.y)) {
+        root.position.y -= loadBox.min.y;
+        console.log('[loadMeshFile] aligned min.y to 0 (was', loadBox.min.y.toFixed(4), ')');
       }
       let meshCount = 0;
       root.traverse((o) => {
@@ -635,12 +642,12 @@ bindFile(els.fileLow, els.lowName, 'РІС‹Р±СЂР°С‚СЊвЂ¦', () =>
 bindFile(els.fileHigh, els.highName, 'РІС‹Р±СЂР°С‚СЊвЂ¦');
 bindFile(els.fileTex, els.texName, 'Р°РІС‚Рѕ РёР· high');
 
-function clearFile(input, label) {
+function clearFile(input, label, clearViewport = true) {
   input.value = '';
-  label.textContent = label.dataset.empty || 'РІС‹Р±СЂР°С‚СЊвЂ¦';
+  label.textContent = label.dataset.empty || 'выбрать…';
   label.classList.add('empty');
   updateBakeEnabled();
-  if (currentRoot) {
+  if (clearViewport && currentRoot) {
     setViewportRoot(null);
   }
 }
@@ -661,12 +668,12 @@ els.fbxScale?.addEventListener('change', () => {
 
 els.clearLow?.addEventListener('click', () => clearFile(els.fileLow, els.lowName));
 els.clearHigh?.addEventListener('click', () => clearFile(els.fileHigh, els.highName));
-els.clearTex?.addEventListener('click', () => clearFile(els.fileTex, els.texName));
-bindFile(elsD.file, elsD.name, 'РІС‹Р±СЂР°С‚СЊвЂ¦', () => {
+els.clearTex?.addEventListener('click', () => clearFile(els.fileTex, els.texName, false));
+bindFile(elsD.file, elsD.name, 'выбрать…', () => {
   const f = elsD.file.files && elsD.file.files[0];
   elsD.btn.disabled = !f;
-  if (f && currentRoom === 'bake') {
-    loadMeshFile(f).catch(e => elsD.status.textContent = 'РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё РјРµС€Р°: ' + e);
+  if (f) {
+    loadMeshFile(f).catch(e => elsD.status.textContent = 'Ошибка загрузки меша: ' + e);
   }
 });
 
@@ -2218,7 +2225,7 @@ function switchRoom(name) {
   bakePanelEl.hidden = name !== 'bake';
   decPanelEl.hidden = name !== 'decimate';
   rigPanelEl.hidden = name !== 'rig';
-  if (currentRoot) currentRoot.visible = name === 'bake';
+  if (currentRoot) currentRoot.visible = name === 'bake' || name === 'decimate';
   rigGroup.visible = name === 'rig';
   if (name !== 'rig') {
     painting = false;

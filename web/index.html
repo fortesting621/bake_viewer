@@ -103,6 +103,25 @@
   }
   .file .pick.empty { color: #6b727c; }
 
+  .file-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .file-row:last-child { margin-bottom: 0; }
+  .file-row .file { flex: 1; min-width: 0; margin-bottom: 0; }
+  button.clear {
+    width: 26px; height: 26px; flex-shrink: 0; padding: 0;
+    background: #3a4149; color: #a7aeb8; font-size: 15px; font-weight: 400;
+    line-height: 1; border-radius: 5px;
+  }
+  button.clear:hover { background: #4a525c; color: #e6e8ea; }
+
+  #meshStats {
+    position: absolute; top: 12px; left: 12px; z-index: 50;
+    background: rgba(30, 33, 38, .92); border: 1px solid #33373d;
+    border-radius: 6px; padding: 6px 10px;
+    font-size: 12px; color: #a7aeb8; font-variant-numeric: tabular-nums;
+    display: none;
+  }
+  #meshStats.visible { display: block; }
+
   .toggle {
     display: flex; align-items: center; gap: 9px;
     font-size: 13px; cursor: pointer; margin-bottom: 14px;
@@ -187,6 +206,7 @@
 </div>
 <div id="app">
   <div id="view">
+    <div id="meshStats"></div>
     <div id="rigPlayer" hidden>
       <button id="rigPlay" title="Пробел — старт/стоп">▶</button>
       <span id="rigFrame">0 / 0</span>
@@ -206,21 +226,41 @@
     <details class="box" open>
       <summary>Импорт и действия</summary>
       <div class="box-body">
-        <label class="file">
-          <span>Low poly</span>
-          <span class="pick empty" id="lowName">выбрать…</span>
-          <input type="file" id="fileLow" accept=".fbx,.obj,.glb,.gltf,.stl">
-        </label>
-        <label class="file">
-          <span>High poly</span>
-          <span class="pick empty" id="highName">выбрать…</span>
-          <input type="file" id="fileHigh" accept=".fbx,.obj,.glb,.gltf,.stl">
-        </label>
-        <label class="file">
-          <span>Base color</span>
-          <span class="pick empty" id="texName">авто из high</span>
-          <input type="file" id="fileTex" accept="image/*">
-        </label>
+        <div class="file-row">
+          <label class="file">
+            <span>Low poly</span>
+            <span class="pick empty" id="lowName" data-empty="выбрать…">выбрать…</span>
+            <input type="file" id="fileLow" accept=".fbx,.obj,.glb,.gltf,.stl">
+          </label>
+          <button type="button" class="clear" id="clearLow" title="Очистить low poly">×</button>
+        </div>
+        <div class="ctrl" id="fbxScaleRow" hidden>
+          <label>FBX scale <span class="val" id="fbxScale_v">1 (по умолчанию)</span></label>
+          <select id="fbxScale">
+            <option value="1">1 (по умолчанию)</option>
+            <option value="0.01">0.01 (cm → m)</option>
+            <option value="0.001">0.001 (mm → m)</option>
+            <option value="0.1">0.1</option>
+            <option value="10">10</option>
+            <option value="100">100 (m → cm)</option>
+          </select>
+        </div>
+        <div class="file-row">
+          <label class="file">
+            <span>High poly</span>
+            <span class="pick empty" id="highName" data-empty="выбрать…">выбрать…</span>
+            <input type="file" id="fileHigh" accept=".fbx,.obj,.glb,.gltf,.stl">
+          </label>
+          <button type="button" class="clear" id="clearHigh" title="Очистить high poly">×</button>
+        </div>
+        <div class="file-row">
+          <label class="file">
+            <span>Base color</span>
+            <span class="pick empty" id="texName" data-empty="авто из high">авто из high</span>
+            <input type="file" id="fileTex" accept="image/*">
+          </label>
+          <button type="button" class="clear" id="clearTex" title="Очистить текстуру">×</button>
+        </div>
 
         <button id="bake" style="margin-top:14px">Перепечь</button>
         <div class="btn-row" style="margin-top:8px">
