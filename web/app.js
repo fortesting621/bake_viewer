@@ -677,17 +677,17 @@ function bindFile(input, label, emptyText, onChange) {
     if (onChange) onChange();
   });
 }
-bindFile(els.fileLow, els.lowName, 'РІС‹Р±СЂР°С‚СЊвЂ¦', () => {
+bindFile(els.fileLow, els.lowName, 'выбрать…', () => {
   const f = els.fileLow.files && els.fileLow.files[0];
   const isFBX = f && f.name.toLowerCase().endsWith('.fbx');
   if (els.fbxScaleRow) els.fbxScaleRow.hidden = !isFBX;
   if (f && currentRoom === 'bake') {
     const scale = isFBX ? parseFloat(els.fbxScale?.value ?? '0.01') : 1;
-    loadMeshFile(f, scale).catch(e => els.status.textContent = 'РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё low-poly: ' + e);
+    loadMeshFile(f, scale).catch(e => els.status.textContent = 'Ошибка загрузки low-poly: ' + e);
   }
 });
-bindFile(els.fileHigh, els.highName, 'РІС‹Р±СЂР°С‚СЊвЂ¦');
-bindFile(els.fileTex, els.texName, 'Р°РІС‚Рѕ РёР· high');
+bindFile(els.fileHigh, els.highName, 'выбрать…');
+bindFile(els.fileTex, els.texName, 'авто из high');
 
 function clearFile(input, label, clearViewport = true) {
   input.value = '';
@@ -732,7 +732,7 @@ elsD.mode.addEventListener('change', () => {
   elsD.targetRow.hidden = mode !== 'TARGET';
 });
 
-bindDec('smoothAngle', (v) => v + 'В°');
+bindDec('smoothAngle', (v) => v + '°');
 elsD.smoothAngle.addEventListener('input', () => {
   elsD.smoothAngle_v.textContent = elsD.smoothAngle.value;
 });
@@ -797,7 +797,7 @@ function applySmoothToRoot(root) {
   });
 
   renderer.render(scene, camera);
-  if (elsD.smoothStatus) elsD.smoothStatus.textContent = flat ? 'РџР»РѕСЃРєРѕРµ Р·Р°С‚РµРЅРµРЅРёРµ' : (matFlat ? 'РњР°С‚РµСЂРёР°Р»: flatShading' : ('РЎРіР»Р°Р¶РёРІР°РЅРёРµ (СѓРіРѕР» в‰¤' + angle + 'В°)'));
+  if (elsD.smoothStatus) elsD.smoothStatus.textContent = flat ? 'Плоское затенение' : (matFlat ? 'Материал: flatShading' : ('Сглаживание (угол ≤' + angle + '°)'));
   console.log('[applySmoothToRoot] done');
 }
 
@@ -900,8 +900,8 @@ els.cageToggle.addEventListener('change', () => {
     refreshCage();
     const n = currentRoot ? currentRoot.getObjectsByProperty('name', '__cage__').length : 0;
     els.status.textContent = n > 0
-      ? 'РљРµР№РґР¶ РІРєР»СЋС‡С‘РЅ: ' + n + ' РѕР±РѕР»РѕС‡РµРє, extrusion ' + cageExtrusion()
-      : 'РљРµР№РґР¶: РЅРµС‚ РјРµС€РµР№ РґР»СЏ РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ';
+      ? 'Кейдж включён: ' + n + ' оболочек, extrusion ' + cageExtrusion()
+      : 'Кейдж: нет мешей для отображения';
   } else {
     if (currentRoot) clearCage(currentRoot);
     els.status.textContent = '';
@@ -966,17 +966,17 @@ els.adjReset.addEventListener('click', resetAdjustments);
 
 async function saveTexture() {
   els.adjSave.disabled = true;
-  els.status.textContent = 'РЎРѕС…СЂР°РЅРµРЅРёРµ PNGвЂ¦';
+  els.status.textContent = 'Сохранение PNG…';
   try {
     const blob = await exportBlob();
-    if (!blob) throw new Error('РЅРµС‚ С‚РµРєСЃС‚СѓСЂС‹');
+    if (!blob) throw new Error('нет текстуры');
     const r = await fetch('/save-texture', { method: 'POST', body: blob });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     await loadTexture();
     resetAdjustments();
-    els.status.textContent = 'Base color СЃРѕС…СЂР°РЅРµРЅР° РЅР° СЃРµСЂРІРµСЂРµ, РєРѕСЂСЂРµРєС†РёСЏ РїСЂРёРјРµРЅРµРЅР°.';
+    els.status.textContent = 'Base color сохранена на сервере, коррекция применена.';
   } catch (e) {
-    els.status.textContent = 'РћС€РёР±РєР° СЃРѕС…СЂР°РЅРµРЅРёСЏ: ' + e;
+    els.status.textContent = 'Ошибка сохранения: ' + e;
   } finally {
     els.adjSave.disabled = false;
   }
@@ -988,7 +988,7 @@ els.adjDownload.addEventListener('click', async () => {
   els.adjDownload.disabled = true;
   try {
     const blob = await exportBlob();
-    if (!blob) throw new Error('РЅРµС‚ С‚РµРєСЃС‚СѓСЂС‹');
+    if (!blob) throw new Error('нет текстуры');
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -999,7 +999,7 @@ els.adjDownload.addEventListener('click', async () => {
     setTimeout(() => URL.revokeObjectURL(url), 5000);
     adjDirty = false;
   } catch (e) {
-    els.status.textContent = 'РћС€РёР±РєР° СЃРєР°С‡РёРІР°РЅРёСЏ: ' + e;
+    els.status.textContent = 'Ошибка скачивания: ' + e;
   } finally {
     els.adjDownload.disabled = false;
   }
@@ -1017,10 +1017,10 @@ async function bake() {
 
   els.bake.disabled = true;
   els.log.textContent = '';
-  els.status.textContent = 'Р—Р°РіСЂСѓР·РєР° Рё Р±РµР№РєвЂ¦';
+  els.status.textContent = 'Загрузка и бейк…';
   const t0 = Date.now();
   const timer = setInterval(() => {
-    els.status.textContent = 'РџРµС‡С‘РјвЂ¦ ' + ((Date.now() - t0) / 1000).toFixed(0) + ' СЃ';
+    els.status.textContent = 'Печём… ' + ((Date.now() - t0) / 1000).toFixed(0) + ' с';
   }, 500);
 
   try {
@@ -1037,17 +1037,17 @@ if (data.ok) {
         updateMeshStats(currentRoot);
       }
       els.status.textContent =
-        'Р“РѕС‚РѕРІРѕ Р·Р° ' + data.seconds + ' СЃ В· РјРµС€РµР№: ' + meshCount +
-        (info.texture ? ' В· С‚РµРєСЃС‚СѓСЂР°: ' + info.texture : '');
+        'Готово за ' + data.seconds + ' с · мешей: ' + meshCount +
+        (info.texture ? ' · текстура: ' + info.texture : '');
       els.exportBakedGlb.disabled = false;
       els.exportBakedFbx.disabled = false;
     } else {
-      els.status.textContent = 'РћС€РёР±РєР° Р±РµР№РєР°';
+      els.status.textContent = 'Ошибка бейка';
       els.log.textContent = data.log || data.error || '';
     }
   } catch (e) {
     clearInterval(timer);
-    els.status.textContent = 'РћС€РёР±РєР° Р·Р°РїСЂРѕСЃР°';
+    els.status.textContent = 'Ошибка запроса';
     els.log.textContent = String(e);
   } finally {
     updateBakeEnabled();
@@ -1085,14 +1085,14 @@ function exportBlob() {
 async function exportBakedGlb() {
   if (!currentRoot) return;
   els.exportBakedGlb.disabled = true;
-  els.status.textContent = 'Р­РєСЃРїРѕСЂС‚ GLBвЂ¦';
+  els.status.textContent = 'Экспорт GLB…';
   try {
     const exporter = new GLTFExporter();
     const glb = await exporter.parseAsync(currentRoot, { binary: true });
     downloadBlob(new Blob([glb], { type: 'model/gltf-binary' }), 'baked_model.glb');
-    els.status.textContent = 'GLB СЃРѕС…СЂР°РЅРµРЅ';
+    els.status.textContent = 'GLB сохранен';
   } catch (e) {
-    els.status.textContent = 'РћС€РёР±РєР° СЌРєСЃРїРѕСЂС‚Р° GLB: ' + e;
+    els.status.textContent = 'Ошибка экспорта GLB: ' + e;
   } finally {
     els.exportBakedGlb.disabled = false;
   }
@@ -1101,7 +1101,7 @@ async function exportBakedGlb() {
 async function exportBakedFbx() {
   if (!currentRoot) return;
   els.exportBakedFbx.disabled = true;
-  els.status.textContent = 'Р­РєСЃРїРѕСЂС‚ FBX (Blender)вЂ¦';
+  els.status.textContent = 'Экспорт FBX (Blender)…';
   try {
     const exporter = new GLTFExporter();
     const glb = await exporter.parseAsync(currentRoot, { binary: true });
@@ -1113,9 +1113,9 @@ async function exportBakedFbx() {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const blob = await r.blob();
     downloadBlob(blob, 'baked_model.fbx');
-    els.status.textContent = 'FBX СЃРѕС…СЂР°РЅРµРЅ';
+    els.status.textContent = 'FBX сохранен';
   } catch (e) {
-    els.status.textContent = 'РћС€РёР±РєР° СЌРєСЃРїРѕСЂС‚Р° FBX: ' + e;
+    els.status.textContent = 'Ошибка экспорта FBX: ' + e;
   } finally {
     els.exportBakedFbx.disabled = false;
   }
@@ -1132,10 +1132,10 @@ const elsC = {
 function openConfirm(dirty) {
   if (dirty) {
     elsC.save.hidden = false;
-    elsC.text.textContent = 'Р’С‹ РїРµСЂРµС…РѕРґРёС‚Рµ Рє СЃР»РµРґСѓСЋС‰РµРјСѓ РґРµР№СЃС‚РІРёСЋ (РґРµС†РёРјР°С†РёСЏ). Р’ СЃС†РµРЅРµ РµСЃС‚СЊ РЅРµСЃРѕС…СЂР°РЅС‘РЅРЅС‹Рµ РёР·РјРµРЅРµРЅРёСЏ С†РІРµС‚РѕРєРѕСЂСЂРµРєС†РёРё base color. РЎРѕС…СЂР°РЅРёС‚СЊ РїРµСЂРµРґ РїСЂРѕРґРѕР»Р¶РµРЅРёРµРј?';
+    elsC.text.textContent = 'Вы переходите к следующему действию (децимация). В сцене есть несохранённые изменения цветокоррекции base color. Сохранить перед продолжением?';
   } else {
     elsC.save.hidden = true;
-    elsC.text.textContent = 'Р’С‹ РїРµСЂРµС…РѕРґРёС‚Рµ Рє СЃР»РµРґСѓСЋС‰РµРјСѓ РґРµР№СЃС‚РІРёСЋ. РўРµРєСѓС‰РёР№ РјРµС€ РІРѕ РІСЊСЋРїРѕСЂС‚Рµ Р±СѓРґРµС‚ Р·Р°РјРµРЅС‘РЅ СЂРµР·СѓР»СЊС‚Р°С‚РѕРј РґРµС†РёРјР°С†РёРё.';
+    elsC.text.textContent = 'Вы переходите к следующему действию. Текущий меш во вьюпорте будет заменён результатом децимации.';
   }
   elsC.root.classList.add('open');
   return new Promise((res) => { confirmResolve = res; });
@@ -1153,7 +1153,7 @@ let decimatedBlob = null;
 async function doDecimate() {
   const f = elsD.file.files && elsD.file.files[0];
   console.log('[doDecimate] file', f);
-  if (!f) { elsD.status.textContent = 'РІС‹Р±РµСЂРёС‚Рµ С„Р°Р№Р» РјРµС€Р°'; return; }
+  if (!f) { elsD.status.textContent = 'выберите файл меша'; return; }
 
   const ans = await openConfirm(adjDirty);
   if (ans === 'cancel') return;
@@ -1171,9 +1171,9 @@ async function doDecimate() {
   elsD.exportGlb.disabled = true;
   elsD.exportObj.disabled = true;
   const t0 = Date.now();
-  elsD.status.textContent = 'Р”РµС†РёРјР°С†РёСЏвЂ¦ 0 СЃ';
+  elsD.status.textContent = 'Децимация… 0 с';
   const timer = setInterval(() => {
-    elsD.status.textContent = 'Р”РµС†РёРјР°С†РёСЏвЂ¦ ' + ((Date.now() - t0) / 1000).toFixed(0) + ' СЃ';
+    elsD.status.textContent = 'Децимация… ' + ((Date.now() - t0) / 1000).toFixed(0) + ' с';
   }, 500);
 
   try {
@@ -1182,7 +1182,7 @@ async function doDecimate() {
     if (!r.ok) {
       let msg = r.status;
       try { const j = await r.json(); msg = j.error || msg; if (j.log) elsD.status.textContent = msg + '\n' + j.log; } catch {}
-      elsD.status.textContent = 'РћС€РёР±РєР° РґРµС†РёРјР°С†РёРё: ' + msg;
+      elsD.status.textContent = 'Ошибка децимации: ' + msg;
       return;
     }
     const info = JSON.parse(r.headers.get('X-Decimate-Info') || '{}');
@@ -1208,14 +1208,14 @@ async function doDecimate() {
     elsD.exportObj.disabled = false;
     adjDirty = false;
     elsD.status.textContent =
-      'Р“РѕС‚РѕРІРѕ Р·Р° ' + (info.seconds ?? '?') + ' СЃ В· ' +
+      'Готово за ' + (info.seconds ?? '?') + ' с · ' +
       (info.polys_before != null
-        ? 'РїРѕР»РёРіРѕРЅРѕРІ: ' + info.polys_before + ' в†’ ' + info.polys_after + ' В· ' : '') +
-      'РІРµСЂС€РёРЅ: ' + info.verts_before + ' в†’ ' + info.verts_after + ' В· ' +
-      'С‚СЂРµСѓРі.: ' + info.tris_before + ' в†’ ' + info.tris_after;
+        ? 'полигонов: ' + info.polys_before + ' → ' + info.polys_after + ' · ' : '') +
+      'вершин: ' + info.verts_before + ' → ' + info.verts_after + ' · ' +
+      'треуг.: ' + info.tris_before + ' → ' + info.tris_after;
   } catch (e) {
     clearInterval(timer);
-    elsD.status.textContent = 'РћС€РёР±РєР° РґРµС†РёРјР°С†РёРё: ' + e;
+    elsD.status.textContent = 'Ошибка децимации: ' + e;
   } finally {
     clearInterval(timer);
     elsD.btn.disabled = false;
@@ -1510,7 +1510,7 @@ function setPlaying(v) {
   if (v && (rigStatic || weightMode)) return;
   rigPlaying = v;
   rigAction.paused = !v;
-  elsAnim.play.textContent = v ? 'вЏё' : 'в–¶';
+  elsAnim.play.textContent = v ? 'вЏё' : '▶';
   if (v) {
     animClock.start();
     animClock.getDelta();
@@ -1902,7 +1902,7 @@ function populateBoneSelect() {
   const prev = weightBoneName;
   weightBoneName = names.includes(prev) ? prev : (names[0] || '');
   elsW.bone.innerHTML = '';
-  const list = names.length ? names : ['вЂ”'];
+  const list = names.length ? names : ['—'];
   for (const n of list) {
     const opt = document.createElement('option');
     opt.value = n;
@@ -1915,16 +1915,16 @@ function populateBoneSelect() {
 function updateWeightInfo() {
   let text = '';
   if (!weightMode) {
-    text = 'РІРєР»СЋС‡РёС‚Рµ СЂРµР¶РёРј РІРµСЃРѕРІ Рё РІС‹Р±РµСЂРёС‚Рµ РєРѕСЃС‚СЊ вЂ” Р·Р°С‚РµРј РІРµРґРёС‚Рµ РїРѕ РјРѕРґРµР»Рё СЃ Р·Р°Р¶Р°С‚РѕР№ Р›РљРњ';
+    text = 'включите режим весов и выберите кость — затем ведите по модели с зажатой ЛКМ';
   } else if (!rigRoot) {
-    text = 'РјРѕРґРµР»СЊ РЅРµ Р·Р°РіСЂСѓР¶РµРЅР°';
+    text = 'модель не загружена';
   } else if (!skinnedMeshes().length) {
-    text = 'РІ РјРѕРґРµР»Рё РЅРµС‚ SkinnedMesh вЂ” РІРµСЃР° РЅРµРґРѕСЃС‚СѓРїРЅС‹';
+    text = 'в модели нет SkinnedMesh — веса недоступны';
   } else {
-    text = 'РєРѕСЃС‚СЊ: ' + (weightBoneName || 'вЂ”') +
-      ' В· РєРёСЃС‚СЊ: СЂР°Рґ. ' + Math.round(brushRadiusFrac * 100) + ' %' +
-      ' В· СЃРёР»Р° ' + Math.round(brushStrength * 100) + ' %' +
-      ' В· СЂРµР¶РёРј: ' + (brushMode === 'sub' ? 'РІС‹С‡РµСЃС‚СЊ' : 'РґРѕР±Р°РІРёС‚СЊ');
+    text = 'кость: ' + (weightBoneName || '—') +
+      ' · кисть: рад. ' + Math.round(brushRadiusFrac * 100) + ' %' +
+      ' · сила ' + Math.round(brushStrength * 100) + ' %' +
+      ' · режим: ' + (brushMode === 'sub' ? 'вычесть' : 'добавить');
   }
   elsW.info.textContent = text;
 }
@@ -1949,7 +1949,7 @@ function resetWeightState() {
   weightColorAttrs.clear();
   elsW.bone.innerHTML = '';
   const opt = document.createElement('option');
-  opt.textContent = 'вЂ”';
+  opt.textContent = '—';
   elsW.bone.appendChild(opt);
   elsW.bone.disabled = true;
   elsW.radius.disabled = true;
@@ -2108,13 +2108,13 @@ async function doExportGlb() {
   exportingNow = true;
   elsW.exportGlb.disabled = true;
   elsW.exportFbx.disabled = true;
-  elsW.exportStatus.textContent = 'Р­РєСЃРїРѕСЂС‚ GLBвЂ¦';
+  elsW.exportStatus.textContent = 'Экспорт GLB…';
   try {
     const buf = await buildGlbBuffer();
     downloadBlob(new Blob([buf], { type: 'model/gltf-binary' }), rigFileBase + '.glb');
-    elsW.exportStatus.textContent = 'GLB СЃРѕС…СЂР°РЅС‘РЅ: ' + rigFileBase + '.glb';
+    elsW.exportStatus.textContent = 'GLB сохранён: ' + rigFileBase + '.glb';
   } catch (e) {
-    elsW.exportStatus.textContent = 'РћС€РёР±РєР° СЌРєСЃРїРѕСЂС‚Р° GLB: ' + (e && e.message ? e.message : e);
+    elsW.exportStatus.textContent = 'Ошибка экспорта GLB: ' + (e && e.message ? e.message : e);
   } finally {
     exportingNow = false;
     elsW.exportGlb.disabled = !rigRoot;
@@ -2127,10 +2127,10 @@ async function doExportFbx() {
   exportingNow = true;
   elsW.exportGlb.disabled = true;
   elsW.exportFbx.disabled = true;
-  elsW.exportStatus.textContent = 'Р­РєСЃРїРѕСЂС‚ GLBвЂ¦';
+  elsW.exportStatus.textContent = 'Экспорт GLB…';
   try {
     const buf = await buildGlbBuffer();
-    elsW.exportStatus.textContent = 'РљРѕРЅРІРµСЂС‚Р°С†РёСЏ РІ FBX (Blender)вЂ¦';
+    elsW.exportStatus.textContent = 'Конвертация в FBX (Blender)…';
     const r = await fetch('/export-fbx', {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
@@ -2146,9 +2146,9 @@ async function doExportFbx() {
     }
     const blob = await r.blob();
     downloadBlob(blob, rigFileBase + '.fbx');
-    elsW.exportStatus.textContent = 'FBX СЃРѕС…СЂР°РЅС‘РЅ: ' + rigFileBase + '.fbx';
+    elsW.exportStatus.textContent = 'FBX сохранён: ' + rigFileBase + '.fbx';
   } catch (e) {
-    elsW.exportStatus.textContent = 'РћС€РёР±РєР° СЌРєСЃРїРѕСЂС‚Р° FBX: ' + (e && e.message ? e.message : e);
+    elsW.exportStatus.textContent = 'Ошибка экспорта FBX: ' + (e && e.message ? e.message : e);
   } finally {
     exportingNow = false;
     elsW.exportGlb.disabled = !rigRoot;
@@ -2182,7 +2182,7 @@ function onRigLoaded(file) {
 async function loadRigFile(file) {
   clearRig();
   elsRig.log.textContent = '';
-  elsRig.status.textContent = 'Р—Р°РіСЂСѓР·РєР° РјРѕРґРµР»РёвЂ¦';
+  elsRig.status.textContent = 'Загрузка модели…';
   const url = URL.createObjectURL(file);
   const ext = (file.name.split('.').pop() || '').toLowerCase();
   try {
@@ -2202,7 +2202,7 @@ async function loadRigFile(file) {
       root = gltf.scene || (gltf.scenes && gltf.scenes[0]);
       clips = gltf.animations || [];
     }
-    if (!root) throw new Error('РјРѕРґРµР»СЊ РЅРµ РЅР°Р№РґРµРЅР° РІ С„Р°Р№Р»Рµ');
+    if (!root) throw new Error('модель не найдена в файле');
 fixTextureColorSpace(root);
     ensureDefaultMaterial(root);
     // Replace all materials with proper MeshStandardMaterial for consistent lighting
@@ -2231,22 +2231,22 @@ normalizeImportedMaterials(root);
     frameObject(root);
     updateMeshStats(root);
     console.log('[loadRigFile] after frameObject, camera:', camera.position.clone(), 'target:', controls.target.clone(), 'root pos:', root.position.clone());
-    let msg = 'РњРѕРґРµР»СЊ Р·Р°РіСЂСѓР¶РµРЅР° В· РјРµС€РµР№: ' + meshCount;
-    if (skel.bones > 0) msg += ' В· РєРѕСЃС‚РµР№: ' + skel.bones + ' В· СЃРµРіРјРµРЅС‚РѕРІ: ' + skel.segments;
-    else msg += ' В· СЃРєРµР»РµС‚ РЅРµ РЅР°Р№РґРµРЅ';
-    if (clips.length) msg += ' В· Р°РЅРёРјР°С†РёР№: ' + clips.length;
+    let msg = 'Модель загружена · мешей: ' + meshCount;
+    if (skel.bones > 0) msg += ' · костей: ' + skel.bones + ' · сегментов: ' + skel.segments;
+    else msg += ' · скелет не найден';
+    if (clips.length) msg += ' · анимаций: ' + clips.length;
     elsRig.status.textContent = msg;
     onRigLoaded(file);
   } catch (e) {
     clearRig();
-    elsRig.status.textContent = 'РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё: ' + (e && e.message ? e.message : e);
+    elsRig.status.textContent = 'Ошибка загрузки: ' + (e && e.message ? e.message : e);
     elsRig.log.textContent = String((e && e.stack) || e);
   } finally {
     URL.revokeObjectURL(url);
   }
 }
 
-bindFile(elsRig.file, elsRig.name, 'РІС‹Р±СЂР°С‚СЊвЂ¦');
+bindFile(elsRig.file, elsRig.name, 'выбрать…');
 
 elsRig.file.addEventListener('change', () => {
   const f = elsRig.file.files && elsRig.file.files[0];
