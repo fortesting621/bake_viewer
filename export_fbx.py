@@ -69,7 +69,7 @@ def unwrap_multiply_factor(node: bpy.types.Node, base: bpy.types.NodeSocket) -> 
 
 def fix_materials() -> None:
     for mat in bpy.data.materials:
-        tree = mat.node_tree if mat.use_nodes else None
+        tree = mat.node_tree
         if tree is None:
             continue
         for node in tree.nodes:

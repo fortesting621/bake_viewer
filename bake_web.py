@@ -40,7 +40,7 @@ def import_model(path: str) -> list[bpy.types.Object]:
 def find_basecolor_image(objs: list[bpy.types.Object]) -> bpy.types.Image | None:
     for ob in objs:
         for m in ob.data.materials:
-            if not m or not m.use_nodes:
+            if not m or m.node_tree is None:
                 continue
             bsdf = next((n for n in m.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
             if not bsdf:
@@ -52,7 +52,7 @@ def find_basecolor_image(objs: list[bpy.types.Object]) -> bpy.types.Image | None
                     return src.image
     for ob in objs:
         for m in ob.data.materials:
-            if not m or not m.use_nodes:
+            if not m or m.node_tree is None:
                 continue
             for n in m.node_tree.nodes:
                 if n.type == "TEX_IMAGE" and n.image and n.image.size[0] > 0:
