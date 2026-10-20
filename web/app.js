@@ -759,7 +759,9 @@ elsD.applySmooth.addEventListener('click', () => {
 
 function bindDec(id, fmt) {
   const el = document.getElementById(id);
+  if (!el) return;
   const out = document.getElementById(id + '_v');
+  if (!out) return;
   const upd = () => { out.textContent = fmt(parseFloat(el.value)); };
   el.addEventListener('input', upd);
   upd();
@@ -1988,14 +1990,14 @@ elsW.saveWeights?.addEventListener('click', async () => {
   if (!rigRoot) return;
   const wasDisabled = elsW.saveWeights.disabled;
   elsW.saveWeights.disabled = true;
-  elsW.info.textContent = 'РЎРѕС…СЂР°РЅРµРЅРёРµ РІРµСЃРѕРІ (GLB)вЂ¦';
+  elsW.info.textContent = 'Экспорт весов (GLB)...';
   try {
     const buf = await buildGlbBuffer();
     const name = (rigFileBase || 'rig') + '_weights.glb';
     downloadBlob(new Blob([buf], { type: 'model/gltf-binary' }), name);
-    elsW.info.textContent = 'Р’РµСЃР° СЃРѕС…СЂР°РЅРµРЅС‹: ' + name;
+    elsW.info.textContent = 'Веса сохранены: ' + name;
   } catch (e) {
-    elsW.info.textContent = 'РћС€РёР±РєР° СЃРѕС…СЂР°РЅРµРЅРёСЏ: ' + (e && e.message ? e.message : e);
+    elsW.info.textContent = 'Ошибка сохранения: ' + (e && e.message ? e.message : e);
   } finally {
     elsW.saveWeights.disabled = wasDisabled;
   }
@@ -2153,7 +2155,6 @@ fixTextureColorSpace(root);
         const mat = new THREE.MeshStandardMaterial({
           color: 0x888888, roughness: 0.85, metalness: 0.0, side: THREE.DoubleSide,
         });
-        if (procRT) mat.map = procRT.texture;
         o.material = mat;
         console.log('[loadRigFile] new material:', o.material.type, 'color:', o.material.color.getHexString());
       }
@@ -2208,12 +2209,14 @@ elsRig.gridToggle.addEventListener('change', () => {
 
 const tabs = document.querySelectorAll('.tab');
 const bakePanelEl = document.getElementById('bakePanel');
+const decPanelEl = document.getElementById('decPanel');
 const rigPanelEl = document.getElementById('rigPanel');
 
 function switchRoom(name) {
   currentRoom = name;
   for (const t of tabs) t.classList.toggle('active', t.dataset.room === name);
   bakePanelEl.hidden = name !== 'bake';
+  decPanelEl.hidden = name !== 'decimate';
   rigPanelEl.hidden = name !== 'rig';
   if (currentRoot) currentRoot.visible = name === 'bake';
   rigGroup.visible = name === 'rig';
@@ -2224,6 +2227,7 @@ function switchRoom(name) {
   elsAnim.player.hidden = !(name === 'rig' && rigClips.length > 0);
   if (name !== 'rig' && rigPlaying) setPlaying(false);
   if (name === 'bake' && currentRoot) frameObject(currentRoot);
+  if (name === 'decimate' && currentRoot) frameObject(currentRoot);
   if (name === 'rig') {
     elsRig.gridToggle.checked = sceneGrid.visible;
     if (rigRoot) frameObject(rigRoot);

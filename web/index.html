@@ -152,6 +152,19 @@
     font-size: 30px; line-height: 1; color: #cfd4da; cursor: pointer;
   }
 
+  #confirm {
+    position: fixed; inset: 0; z-index: 1001;
+    display: none; align-items: center; justify-content: center;
+    background: rgba(0,0,0,.7);
+  }
+  #confirm.open { display: flex; }
+  #confirm .modal-content {
+    background: #23262b; border: 1px solid #3a3f46;
+    border-radius: 8px; padding: 20px 24px; max-width: 400px;
+    color: #e6e8ea; box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  }
+  #confirm .modal-content > div { margin-bottom: 8px; line-height: 1.5; }
+
   #tooltip {
     position: fixed; max-width: 340px; z-index: 999;
     background: #111317; color: #d7dbe0;
@@ -169,6 +182,7 @@
 <body>
 <div id="topbar">
   <button class="tab active" data-room="bake">Комната бэйка</button>
+  <button class="tab" data-room="decimate">Децимация</button>
   <button class="tab" data-room="rig">Комната рига</button>
 </div>
 <div id="app">
@@ -356,6 +370,99 @@
     </details>
   </div>
 
+  <div class="panel" id="decPanel" hidden>
+    <h1>Децимация</h1>
+    <div class="sub">упрощение меша · экспорт</div>
+
+    <details class="box" open>
+      <summary>Импорт и действия</summary>
+      <div class="box-body">
+        <label class="file">
+          <span>Mesh</span>
+          <span class="pick empty" id="decName">выбрать…</span>
+          <input type="file" id="decFile" accept=".fbx,.obj,.glb,.gltf,.stl">
+        </label>
+        <div class="ctrl" data-tip="Режим децимации: COLLAPSE — по проценту треугольников, UNSUBDIV — по итерациям, DISSOLVE — по углу, TARGET — до целевого количества вершин.">
+          <label>режим</label>
+          <select id="decMode">
+            <option value="COLLAPSE">Collapse (ratio)</option>
+            <option value="UNSUBDIV">Un-Subdivide (iterations)</option>
+            <option value="DISSOLVE">Dissolve (angle)</option>
+            <option value="TARGET">Target vertex count</option>
+          </select>
+        </div>
+        <div class="ctrl" id="decRatioRow">
+          <label>ratio <span class="val" id="decRatio_v">0.50</span></label>
+          <input type="range" id="decRatio" min="0.01" max="1" step="0.01" value="0.5">
+        </div>
+        <div class="ctrl" id="decIterRow" hidden>
+          <label>iterations <span class="val" id="decIter_v">1</span></label>
+          <input type="range" id="decIter" min="1" max="10" step="1" value="1">
+        </div>
+        <div class="ctrl" id="decAngleRow" hidden>
+          <label>angle <span class="val" id="decAngle_v">5.0</span></label>
+          <input type="range" id="decAngle" min="0.1" max="20" step="0.1" value="5">
+        </div>
+        <div class="ctrl" id="decTargetRow" hidden>
+          <label>target verts <span class="val" id="decTarget_v">5000</span></label>
+          <input type="range" id="decTarget" min="100" max="200000" step="100" value="5000">
+        </div>
+        <button id="decimate" style="margin-top:14px" disabled>Децимация</button>
+        <div class="btn-row" style="margin-top:8px">
+          <button id="decExportGlb" class="secondary" disabled>Экспорт GLB</button>
+          <button id="decExportObj" class="secondary" disabled>Экспорт OBJ</button>
+        </div>
+        <div id="decStatus"></div>
+      </div>
+    </details>
+
+    <details class="box" open>
+      <summary>Сглаживание / Normals</summary>
+      <div class="box-body">
+        <div class="ctrl tight" data-tip="Максимальный угол для сглаживания нормалей (в градусах). 180 = полное сглаживание.">
+          <label>угол сглаживания <span class="val" id="smoothAngle_v">30°</span></label>
+          <input type="range" id="smoothAngle" min="0" max="180" step="1" value="30">
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="smoothWeighted" checked>
+          <span>Weighted normals (по площади граней)</span>
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="smoothFlat">
+          <span>Flat shading (плоское затенение)</span>
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="matFlatShading">
+          <span>Material flatShading (на материале)</span>
+        </label>
+        <button id="applySmooth" class="secondary" style="margin-top:8px">Применить сглаживание</button>
+        <div id="smoothStatus"></div>
+      </div>
+    </details>
+
+    <details class="box" open>
+      <summary>Отображение</summary>
+      <div class="box-body">
+        <label class="toggle">
+          <input type="checkbox" id="sceneGridToggle" checked>
+          <span>Опорная сетка</span>
+        </label>
+        <div class="ctrl tight" data-tip="Цвет опорной сетки.">
+          <label>цвет опорной сетки <span class="val" id="sceneGridColor_v">210</span></label>
+          <input type="range" id="sceneGridColor" class="hue" min="0" max="360" step="1" value="210">
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="wireToggle">
+          <span>Каркас меша</span>
+        </label>
+        <div class="ctrl tight" data-tip="Цвет каркаса.">
+          <label>цвет каркаса <span class="val" id="wireColor_v">210</span></label>
+          <input type="range" id="wireColor" class="hue" min="0" max="360" step="1" value="210">
+        </div>
+      </div>
+    </details>
+  </div>
+
   <div class="panel" id="rigPanel" hidden>
     <h1>Комната рига</h1>
     <div class="sub">модель со скелетом · просмотр</div>
@@ -419,8 +526,11 @@
             <option value="sub">Вычесть вес</option>
           </select>
         </div>
-        <div class="btn-row" style="margin-bottom: 8px">
-          <button id="rigWeightNormalize" class="secondary" disabled>Нормализовать всё</button>
+        <div class="ctrl" data-tip="<b>Нормализовать веса.</b> При рисовании кистью сумма 4 весов вершины может уйти от 1.0 (напр. 0.97 или 1.03). Это ломает деформацию: кости тянут вершину некорректно.<br>Кнопка проходит по всем вершинам SkinnedMesh и приводит сумму весов к 1.0.<br>Нужно нажимать перед экспортом или проверкой анимации, если рисовали долго.">
+          <div class="btn-row" style="margin-bottom: 8px">
+            <button id="rigWeightNormalize" class="secondary" disabled>Нормализовать всё</button>
+            <button id="rigWeightSave" class="secondary" disabled>Сохранить веса</button>
+          </div>
         </div>
         <div id="rigWeightInfo">включите режим весов и выберите кость — затем ведите по модели с зажатой ЛКМ</div>
       </div>
@@ -430,12 +540,23 @@
       <summary>Экспорт</summary>
       <div class="box-body">
         <div class="btn-row">
-          <button id="rigExportGlb" class="secondary" disabled>Экспорт GLB</button>
-          <button id="rigExportFbx" class="secondary" disabled>Экспорт FBX</button>
+          <button id="rigExportGlb" class="secondary" disabled data-tip="Экспорт модели с весами в GLB (бинарный). Включает скелет, анимации (если есть) и вершинные веса. Материалы заменены на MeshStandardMaterial.">Экспорт GLB</button>
+          <button id="rigExportFbx" class="secondary" disabled data-tip="Экспорт в FBX через Blender: GLB → сервер → Blender → FBX. Сохраняет скелет, анимации, веса, текстуры. Требует Blender 5.0 с OPTIX.">Экспорт FBX</button>
         </div>
         <div id="rigExportStatus"></div>
       </div>
     </details>
+  </div>
+</div>
+
+<div id="confirm" class="modal">
+  <div class="modal-content">
+    <div id="confirmText"></div>
+    <div class="btn-row" style="margin-top:16px;justify-content:flex-end">
+      <button id="confirmSave" class="secondary" style="width:auto">Сохранить</button>
+      <button id="confirmSkip" class="secondary" style="width:auto">Пропустить</button>
+      <button id="confirmCancel" class="secondary" style="width:auto">Отмена</button>
+    </div>
   </div>
 </div>
 
