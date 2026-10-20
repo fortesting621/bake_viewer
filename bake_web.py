@@ -2,10 +2,28 @@ import bpy
 import sys
 import os
 import json
+from typing import Any, TypedDict
 
-def import_model(path):
+
+class BakeCfg(TypedDict, total=False):
+    texture: str | None
+    resolution: int
+    margin: int
+    cage_extrusion: float
+    max_ray_distance: float
+    out_png: str
+    out_glb: str
+
+
+class MeshStats(TypedDict):
+    verts: int
+    tris: int
+    polys: int
+
+
+def import_model(path: str) -> list[bpy.types.Object]:
     ext = os.path.splitext(path)[1].lower()
-    before = set(o.name for o in bpy.data.objects)
+    before = {o.name for o in bpy.data.objects}
     if ext == ".fbx":
         bpy.ops.import_scene.fbx(filepath=path)
     elif ext == ".obj":
@@ -16,17 +34,15 @@ def import_model(path):
         bpy.ops.wm.stl_import(filepath=path)
     else:
         bpy.ops.import_scene.fbx(filepath=path)
-    new = [o for o in bpy.data.objects if o.name not in before and o.type == "MESH"]
-    return new
+    return [o for o in bpy.data.objects if o.name not in before and o.type == "MESH"]
 
 
-def find_basecolor_image(objs):
+def find_basecolor_image(objs: list[bpy.types.Object]) -> bpy.types.Image | None:
     for ob in objs:
         for m in ob.data.materials:
             if not m or not m.use_nodes:
                 continue
-            nt = m.node_tree
-            bsdf = next((n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"), None)
+            bsdf = next((n for n in m.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
             if not bsdf:
                 continue
             inp = bsdf.inputs.get("Base Color")
@@ -44,7 +60,8 @@ def find_basecolor_image(objs):
     return None
 
 
-def make_emission_material(name, image=None, target_node=False):
+def make_emission_material(name: str, image: bpy.types.Image | None = None,
+                           target_node: bool = False) -> bpy.types.Material:
     m = bpy.data.materials.new(name)
     m.use_nodes = True
     nt = m.node_tree
@@ -64,7 +81,7 @@ def make_emission_material(name, image=None, target_node=False):
     return m
 
 
-def setup_gpu(scene):
+def setup_gpu(scene: bpy.types.Scene) -> None:
     try:
         prefs = bpy.context.preferences.addons["cycles"].preferences
         prefs.compute_device_type = "OPTIX"
@@ -77,7 +94,7 @@ def setup_gpu(scene):
         scene.cycles.device = "CPU"
 
 
-def mesh_stats(objs):
+def mesh_stats(objs: list[bpy.types.Object]) -> MeshStats:
     polys = tris = verts = 0
     for o in objs:
         verts += len(o.data.vertices)
@@ -86,7 +103,56 @@ def mesh_stats(objs):
     return {"polys": polys, "tris": tris, "verts": verts}
 
 
-def main(cfg):
+def resolve_image(cfg: dict[str, Any], high_objs: list[bpy.types.Object]) -> bpy.types.Image:
+    tex_path = cfg.get("texture")
+    if tex_path and os.path.exists(tex_path):
+        image = bpy.data.images.load(tex_path)
+    else:
+        image = find_basecolor_image(high_objs)
+    if image is None:
+        raise RuntimeError("не найдена base color текстура: укажите файл")
+    image.colorspace_settings.name = "sRGB"
+    return image
+
+
+def setup_bake(scene: bpy.types.Scene, cfg: dict[str, Any]) -> None:
+    scene.render.engine = "CYCLES"
+    setup_gpu(scene)
+    scene.cycles.samples = 1
+    scene.cycles.use_denoising = False
+    scene.view_settings.view_transform = "Standard"
+    b = scene.render.bake
+    b.margin = int(cfg.get("margin", 32))
+    b.use_selected_to_active = True
+    b.cage_extrusion = float(cfg.get("cage_extrusion", 0.008))
+    b.max_ray_distance = float(cfg.get("max_ray_distance", 0.012))
+
+
+def bake_low_objects(low_objs: list[bpy.types.Object],
+                     high_objs: list[bpy.types.Object]) -> None:
+    b = bpy.context.scene.render.bake
+    for i, lo in enumerate(low_objs):
+        for o in bpy.data.objects:
+            o.select_set(o == lo or o in high_objs)
+        bpy.context.view_layer.objects.active = lo
+        b.use_clear = (i == 0)
+        bpy.ops.object.bake(type="EMIT")
+
+
+def export_low_glb(low_objs: list[bpy.types.Object], out_glb: str) -> None:
+    for o in bpy.data.objects:
+        o.select_set(o in low_objs)
+    bpy.context.view_layer.objects.active = low_objs[0]
+    bpy.ops.export_scene.gltf(
+        filepath=out_glb,
+        export_format="GLB",
+        use_selection=True,
+        export_apply=True,
+        export_yup=True,
+    )
+
+
+def main(cfg: dict[str, Any]) -> None:
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
 
@@ -97,14 +163,7 @@ def main(cfg):
     if not low_objs:
         raise RuntimeError("low poly: не найдено мешей")
 
-    tex_path = cfg.get("texture")
-    if tex_path and os.path.exists(tex_path):
-        image = bpy.data.images.load(tex_path)
-    else:
-        image = find_basecolor_image(high_objs)
-    if image is None:
-        raise RuntimeError("не найдена base color текстура: укажите файл")
-    image.colorspace_settings.name = "sRGB"
+    image = resolve_image(cfg, high_objs)
 
     mat_h = make_emission_material("H_mat", image=image)
     for ob in high_objs:
@@ -128,40 +187,14 @@ def main(cfg):
     tgt.select = True
     nt.nodes.active = tgt
 
-    scene.render.engine = "CYCLES"
-    setup_gpu(scene)
-    scene.cycles.samples = 1
-    scene.cycles.use_denoising = False
-    scene.view_settings.view_transform = "Standard"
+    setup_bake(scene, cfg)
+    bake_low_objects(low_objs, high_objs)
 
-    b = scene.render.bake
-    b.margin = int(cfg.get("margin", 32))
-    b.use_selected_to_active = True
-    b.cage_extrusion = float(cfg.get("cage_extrusion", 0.008))
-    b.max_ray_distance = float(cfg.get("max_ray_distance", 0.012))
-
-    for i, lo in enumerate(low_objs):
-        for o in bpy.data.objects:
-            o.select_set(o == lo or o in high_objs)
-        bpy.context.view_layer.objects.active = lo
-        b.use_clear = (i == 0)
-        bpy.ops.object.bake(type="EMIT")
-
-    out_png = cfg["out_png"]
-    result_img.filepath_raw = out_png
+    result_img.filepath_raw = cfg["out_png"]
     result_img.file_format = "PNG"
     result_img.save()
 
-    for o in bpy.data.objects:
-        o.select_set(o in low_objs)
-    bpy.context.view_layer.objects.active = low_objs[0]
-    bpy.ops.export_scene.gltf(
-        filepath=cfg["out_glb"],
-        export_format="GLB",
-        use_selection=True,
-        export_apply=True,
-        export_yup=True,
-    )
+    export_low_glb(low_objs, cfg["out_glb"])
 
     result = {
         "high_objects": [o.name for o in high_objs],
