@@ -3,16 +3,7 @@ import sys
 import os
 import json
 import math
-from typing import Any, NamedTuple, TypedDict
-
-
-class DecimateCfg(TypedDict, total=False):
-    mode: str
-    ratio: float
-    iterations: int
-    angle: float
-    target: int
-    out_obj: str
+from typing import Any, NamedTuple
 
 
 class MeshStats(NamedTuple):
@@ -50,19 +41,19 @@ def _count_tris(ob: bpy.types.Object) -> int:
     return sum(max(len(p.vertices) - 2, 0) for p in ob.data.polygons)
 
 
-def _apply_unsudiv(mod: bpy.types.Modifier, cfg: DecimateCfg) -> None:
+def _apply_unsudiv(mod: bpy.types.Modifier, cfg: dict[str, Any]) -> None:
     mod.decimate_type = "UNSUBDIV"
     mod.iterations = max(1, int(cfg.get("iterations", 1)))
 
 
-def _apply_dissolve(mod: bpy.types.Modifier, cfg: DecimateCfg) -> None:
+def _apply_dissolve(mod: bpy.types.Modifier, cfg: dict[str, Any]) -> None:
     mod.decimate_type = "DISSOLVE"
     mod.angle_limit = math.radians(float(cfg.get("angle", 5.0)))
     mod.use_dissolve_boundaries = False
 
 
 def _apply_target(mod: bpy.types.Modifier, ob: bpy.types.Object,
-                  cfg: DecimateCfg, total_objs: int) -> None:
+                  cfg: dict[str, Any], total_objs: int) -> None:
     target_total = max(1, int(cfg.get("target", 0)))
     target_per_obj = max(1, target_total // total_objs)
     tris = _count_tris(ob)
@@ -72,13 +63,13 @@ def _apply_target(mod: bpy.types.Modifier, ob: bpy.types.Object,
     mod.use_collapse_triangulate = True
 
 
-def _apply_collapse(mod: bpy.types.Modifier, cfg: DecimateCfg) -> None:
+def _apply_collapse(mod: bpy.types.Modifier, cfg: dict[str, Any]) -> None:
     mod.decimate_type = "COLLAPSE"
     mod.ratio = min(1.0, max(0.0, float(cfg.get("ratio", 0.5))))
     mod.use_collapse_triangulate = True
 
 
-def apply_decimate(ob: bpy.types.Object, mode: str, cfg: DecimateCfg,
+def apply_decimate(ob: bpy.types.Object, mode: str, cfg: dict[str, Any],
                    total_objs: int = 1) -> None:
     bpy.context.view_layer.objects.active = ob
     ob.select_set(True)

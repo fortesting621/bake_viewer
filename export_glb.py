@@ -1,10 +1,10 @@
 import bpy
 import os
 
-DESK = r"C:\Users\user\Desktop\bake"
-LOW_FBX = os.path.join(DESK, "l.fbx")
-OUT_GLB = os.path.join(DESK, "bake_viewer", "web", "model.glb")
-LOW_NAME = "mesh_rep_0_ori_repair_quad"
+DESK: str = r"C:\Users\user\Desktop\bake"
+LOW_FBX: str = os.path.join(DESK, "l.fbx")
+OUT_GLB: str = os.path.join(DESK, "bake_viewer", "web", "model.glb")
+LOW_NAME: str = "mesh_rep_0_ori_repair_quad"
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.ops.import_scene.fbx(filepath=LOW_FBX)
