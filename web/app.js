@@ -322,7 +322,8 @@ function setupTargets() {
 
   if (currentRoot) {
     currentRoot.traverse((o) => {
-      if (o.isMesh && o.material) {
+      // __cage__ — debug-меш без UV: карта на общем cageMaterial даёт чёрный кейдж
+      if (o.isMesh && o.name !== '__cage__' && o.material) {
         o.material.map = procRT.texture;
         o.material.needsUpdate = true;
       }
@@ -444,7 +445,7 @@ function updateMeshStats(root) {
   if (!root) { el.classList.remove('visible'); el.textContent = ''; return; }
   let verts = 0, tris = 0;
   root.traverse((o) => {
-    if (o.isMesh && o.geometry) {
+    if (o.isMesh && o.geometry && o.name !== '__cage__') {
       verts += o.geometry.attributes.position?.count || 0;
       const idx = o.geometry.index;
       if (idx) tris += idx.count / 3;
@@ -591,11 +592,8 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
-window.addEventListener('beforeunload', () => {
-  navigator.sendBeacon('/shutdown');
-});
-
 // Heartbeat: ping server every 5s; server shuts down after 30s of silence
+// (шлётся только heartbeat: beforeunload-beacon убран, иначе F5 гасил сервер)
 setInterval(() => {
   fetch('/heartbeat', { method: 'POST', keepalive: true }).catch(() => {});
 }, 5000);
@@ -1082,13 +1080,61 @@ function exportBlob() {
   });
 }
 
+function isDrawableImage(img) {
+  return (typeof HTMLImageElement !== 'undefined' && img instanceof HTMLImageElement) ||
+    (typeof HTMLCanvasElement !== 'undefined' && img instanceof HTMLCanvasElement) ||
+    (typeof ImageBitmap !== 'undefined' && img instanceof ImageBitmap);
+}
+
+// GLTFExporter рисует texture.image через drawImage: у текстуры render-target
+// image — объект {width,height}, не drawable → экспорт падал с TypeError.
+// Подменяем такие map на bitmap итоговой текстуры и прячем debug-объекты
+// (__cage__, каркас) только на время parseAsync.
+async function parseWithReadableMaps(root, fn) {
+  const swaps = [];
+  const hidden = [];
+  root.traverse((o) => {
+    if (o.name === '__cage__' && o.visible) {
+      o.visible = false;
+      hidden.push(o);
+      return;
+    }
+    const m = o.material;
+    if (m && m.isMaterial && m.map && !isDrawableImage(m.map.image)) swaps.push([m, m.map]);
+  });
+  wires.forEach((w) => { if (w.visible) { w.visible = false; hidden.push(w); } });
+  let tex = null;
+  let image = null;
+  try {
+    if (swaps.length) {
+      const blob = await exportBlob();
+      if (!blob) throw new Error('нет итоговой текстуры для экспорта');
+      image = await createImageBitmap(blob);
+      tex = new THREE.Texture(image);
+      // flipY=false: экспортёр не переворачивает картинку → в glb уходит PNG как есть
+      // (v=0 модели = верх текстуры, та же конвенция, что у исходного glb)
+      tex.flipY = false;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.needsUpdate = true;
+      for (const [mat] of swaps) mat.map = tex;
+    }
+    return await fn();
+  } finally {
+    for (const [mat, oldMap] of swaps) mat.map = oldMap;
+    for (const o of hidden) o.visible = true;
+    if (tex) tex.dispose();
+    if (image) image.close();
+  }
+}
+
 async function exportBakedGlb() {
   if (!currentRoot) return;
   els.exportBakedGlb.disabled = true;
   els.status.textContent = 'Экспорт GLB…';
   try {
     const exporter = new GLTFExporter();
-    const glb = await exporter.parseAsync(currentRoot, { binary: true });
+    const glb = await parseWithReadableMaps(
+      currentRoot, () => exporter.parseAsync(currentRoot, { binary: true }));
     downloadBlob(new Blob([glb], { type: 'model/gltf-binary' }), 'baked_model.glb');
     els.status.textContent = 'GLB сохранен';
   } catch (e) {
@@ -1104,7 +1150,8 @@ async function exportBakedFbx() {
   els.status.textContent = 'Экспорт FBX (Blender)…';
   try {
     const exporter = new GLTFExporter();
-    const glb = await exporter.parseAsync(currentRoot, { binary: true });
+    const glb = await parseWithReadableMaps(
+      currentRoot, () => exporter.parseAsync(currentRoot, { binary: true }));
     const r = await fetch('/export-fbx', {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },

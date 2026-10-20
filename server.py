@@ -1,8 +1,10 @@
+import glob
 import http.server
-import socketserver
 import json
+import logging
 import os
 import re
+import socketserver
 import subprocess
 import threading
 import time
@@ -49,7 +51,9 @@ class ExportCfg(TypedDict):
     out: str
 
 
-BLENDER = r"C:\Program Files\Blender Foundation\Blender 5.0\blender.exe"
+logger = logging.getLogger(__name__)
+
+BLENDER_FALLBACK = r"C:\Program Files\Blender Foundation\Blender 5.0\blender.exe"
 BASE = r"C:\Users\user\Desktop\bake"
 VIEWER = os.path.join(BASE, "bake_viewer")
 WEB = os.path.join(VIEWER, "web")
@@ -65,6 +69,41 @@ bake_lock = threading.Lock()
 export_lock = threading.Lock()
 decimate_lock = threading.Lock()
 os.makedirs(UPLOADS, exist_ok=True)
+
+HEARTBEAT_TIMEOUT = 30.0
+_last_beat = time.monotonic()
+_beats_seen = False
+
+
+def _blender_version(exe: str) -> tuple[int, ...]:
+    digits = re.findall(r"\d+", os.path.basename(os.path.dirname(exe)))
+    return tuple(int(d) for d in digits) or (0,)
+
+
+def resolve_blender() -> str:
+    """Путь к blender.exe: env BLENDER_EXE > свежая установка > fallback.
+
+    Папка с конкретной версией может исчезнуть после обновления Blender
+    (так 5.0 заменился на 5.2) — поэтому ищем динамически.
+    """
+    env = os.environ.get("BLENDER_EXE", "")
+    if env and os.path.isfile(env):
+        return env
+    try:
+        candidates = [
+            os.path.join(d, "blender.exe")
+            for d in glob.glob(r"C:\Program Files\Blender Foundation\Blender *")
+            if os.path.isfile(os.path.join(d, "blender.exe"))
+        ]
+        if candidates:
+            return max(candidates, key=_blender_version)
+    except OSError:
+        logger.exception("поиск blender.exe не удался")
+    logger.error("blender.exe не найден, используется fallback: %s", BLENDER_FALLBACK)
+    return BLENDER_FALLBACK
+
+
+BLENDER = resolve_blender()
 
 
 def parse_multipart(body: bytes, boundary: str) -> dict[str, MultipartPart]:
@@ -170,16 +209,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/heartbeat": self.do_heartbeat,
         }
         handler = routes.get(path)
-        if handler:
+        if not handler:
+            return self.send_error(404)
+        try:
             handler()
-            return
-        self.send_error(404)
+        except Exception as exc:
+            # Без guard исключение в потоке закрывало сокет без ответа —
+            # браузер получал net::ERR_EMPTY_RESPONSE вместо ошибки
+            logger.exception("POST %s: необработанное исключение", path)
+            try:
+                self.reply(500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+            except OSError:
+                pass  # клиент уже отключился
 
     def read_body(self) -> bytes:
         length = int(self.headers.get("Content-Length", 0))
         return self.rfile.read(length) if length else b""
 
     def do_heartbeat(self) -> None:
+        global _last_beat, _beats_seen
+        _last_beat = time.monotonic()
+        _beats_seen = True
         self.reply(200, {"ok": True})
 
     def do_shutdown(self) -> None:
@@ -354,9 +404,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
 
+def watchdog() -> None:
+    """Выход через HEARTBEAT_TIMEOUT молчания после первого heartbeat.
+
+    Отсчёт стартует только после первого ответа фронта: пока никто не
+    подключался, сервер живёт бессрочно (запуск из start.bat).
+    """
+    while True:
+        time.sleep(5.0)
+        if _beats_seen and time.monotonic() - _last_beat > HEARTBEAT_TIMEOUT:
+            print("Bake viewer: нет heartbeat %.0fs — выход" % HEARTBEAT_TIMEOUT)
+            os._exit(0)
+
+
 if __name__ == "__main__":
     os.chdir(WEB)
+    threading.Thread(target=watchdog, daemon=True).start()
     socketserver.ThreadingTCPServer.allow_reuse_address = True
     with socketserver.ThreadingTCPServer(("127.0.0.1", PORT), Handler) as httpd:
         print("Bake viewer: http://127.0.0.1:%d" % PORT)
+        print("Blender: %s" % BLENDER)
         httpd.serve_forever()
