@@ -41,6 +41,35 @@ def flatten_empty_armature_parents() -> None:
         bpy.data.objects.remove(obj, do_unlink=True)
 
 
+def flatten_all_empty_parents() -> None:
+    """Apply parent transform to children and remove empty parents that have no animation/armature purpose."""
+    for obj in list(bpy.data.objects):
+        if obj.type != "EMPTY":
+            continue
+        if not obj.children:
+            continue
+        # Keep empties that have armature children (handled by flatten_empty_armature_parents)
+        if any(child.type == "ARMATURE" for child in obj.children):
+            continue
+        # Keep empties with custom properties or constraints (likely rig-related)
+        if obj.constraints or obj.keys():
+            continue
+        for child in list(obj.children):
+            world = child.matrix_world.copy()
+            child.parent = obj.parent
+            child.matrix_world = world
+        bpy.data.objects.remove(obj, do_unlink=True)
+
+
+def remove_cage_and_dummy_objects() -> None:
+    for obj in list(bpy.data.objects):
+        if obj.name == "__cage__":
+            bpy.data.objects.remove(obj, do_unlink=True)
+            continue
+        if obj.type == "EMPTY" and not obj.children:
+            bpy.data.objects.remove(obj, do_unlink=True)
+
+
 def unwrap_multiply_factor(node: bpy.types.Node, base: bpy.types.NodeSocket) -> None:
     src = base.links[0].from_node
     if src.type not in ("MIX", "MIX_RGB") or src.blend_type != "MULTIPLY":
@@ -100,6 +129,8 @@ def main(cfg: dict[str, Any]) -> None:
     bpy.ops.import_scene.gltf(filepath=cfg["in"])
     remove_aux_collection()
     flatten_empty_armature_parents()
+    flatten_all_empty_parents()
+    remove_cage_and_dummy_objects()
     fix_materials()
     save_embedded_textures()
     bpy.ops.export_scene.fbx(

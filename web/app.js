@@ -1088,21 +1088,21 @@ function isDrawableImage(img) {
 
 // GLTFExporter рисует texture.image через drawImage: у текстуры render-target
 // image — объект {width,height}, не drawable → экспорт падал с TypeError.
-// Подменяем такие map на bitmap итоговой текстуры и прячем debug-объекты
-// (__cage__, каркас) только на время parseAsync.
+// Подменяем такие map на bitmap итоговой текстуры и УДАЛЯЕМ debug-объекты
+// (__cage__, каркас) из графа сцены только на время parseAsync.
 async function parseWithReadableMaps(root, fn) {
   const swaps = [];
-  const hidden = [];
+  const removed = [];
   root.traverse((o) => {
-    if (o.name === '__cage__' && o.visible) {
-      o.visible = false;
-      hidden.push(o);
+    if (o.name === '__cage__' && o.visible && o.parent) {
+      o.parent.remove(o);
+      removed.push({ obj: o, parent: o.parent });
       return;
     }
     const m = o.material;
     if (m && m.isMaterial && m.map && !isDrawableImage(m.map.image)) swaps.push([m, m.map]);
   });
-  wires.forEach((w) => { if (w.visible) { w.visible = false; hidden.push(w); } });
+  wires.forEach((w) => { if (w.visible && w.parent) { w.parent.remove(w); removed.push({ obj: w, parent: w.parent }); } });
   let tex = null;
   let image = null;
   try {
@@ -1111,8 +1111,6 @@ async function parseWithReadableMaps(root, fn) {
       if (!blob) throw new Error('нет итоговой текстуры для экспорта');
       image = await createImageBitmap(blob);
       tex = new THREE.Texture(image);
-      // flipY=false: экспортёр не переворачивает картинку → в glb уходит PNG как есть
-      // (v=0 модели = верх текстуры, та же конвенция, что у исходного glb)
       tex.flipY = false;
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.needsUpdate = true;
@@ -1121,7 +1119,7 @@ async function parseWithReadableMaps(root, fn) {
     return await fn();
   } finally {
     for (const [mat, oldMap] of swaps) mat.map = oldMap;
-    for (const o of hidden) o.visible = true;
+    for (const { obj, parent } of removed) parent.add(obj);
     if (tex) tex.dispose();
     if (image) image.close();
   }
