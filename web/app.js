@@ -8,7 +8,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const view = document.getElementById('view');
 const appVerEl = document.getElementById('appVer');
-if (appVerEl) appVerEl.textContent = 'v20261019j';
+if (appVerEl) appVerEl.textContent = 'v20261021b';
 
 window.addEventListener('error', (e) => {
   const st = document.getElementById('status');
@@ -499,14 +499,46 @@ function loadModel() {
         }
       });
 
+      // model.glb приходит из Blender — он уже в метрах; выравниваем так же,
+      // как импортированный исходник (низ на y=0, центр по X/Z).
+      normalizeImportedRoot(root, 1);
+
       setViewportRoot(root);
       resolve(meshCount);
     }, undefined, reject);
   });
 }
 
-function loadMeshFile(file, userScale = 1) {
-  console.log('[loadMeshFile] start', file.name, file.size, 'userScale:', userScale);
+// Единое правило импорта для всех комнат: в сцене всегда МЕТРЫ (конвенция Blender/glTF),
+// низ модели на y=0, центр по X/Z. Без этого превью исходного файла и результат
+// пайплайна (бейк/децимация) отличаются размером и смещением.
+function normalizeImportedRoot(root, unitScale = 1) {
+  if (unitScale && unitScale !== 1) root.scale.setScalar(unitScale);
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root);
+  if (!isFinite(box.min.y)) return;
+  const p0 = root.position.clone();
+  const c0 = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  // мир = position + scale·R·локальный_центр  ⇒  position = цель − (центр − position)
+  root.position.copy(p0).sub(c0).add(new THREE.Vector3(0, size.y / 2, 0));
+  console.log('[normalizeImportedRoot] scale:', root.scale.x,
+    'size:', size.x.toFixed(3), size.y.toFixed(3), size.z.toFixed(3),
+    'pos:', root.position.toArray().map((v) => v.toFixed(3)).join(', '));
+}
+
+// Единицы FBX: UnitScaleFactor = «сколько сантиметров в одной единице файла».
+// Blender импортирует FBX с множителем U/100 (проверено: U=1 → ×0.01, U=100 → ×1,
+// U=1000 → ×10) — повторяем ровно это, чтобы модель совпадала с тем, что видит
+// Blender в пайплайнах. Остальные форматы (OBJ/GLB/STL) метрические.
+function unitsToMeters(root, ext) {
+  if (ext !== 'fbx') return 1;
+  const u = Number(root.userData?.unitScaleFactor);
+  return Number.isFinite(u) && u > 0 ? u / 100 : 0.01;
+}
+
+function loadMeshFile(file) {
+  console.log('[loadMeshFile] start', file.name, file.size);
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const ext = file.name.split('.').pop().toLowerCase();
@@ -530,29 +562,11 @@ function loadMeshFile(file, userScale = 1) {
       URL.revokeObjectURL(url);
       const root = gltf.scene || gltf; // FBXLoader returns Group directly
 
-      // Apply FBX unit scale factor (FBX often uses cm, three.js uses meters)
-      const autoScale = root.userData?.unitScaleFactor ?? 1;
-      if (autoScale !== 1) {
-        root.scale.setScalar(autoScale);
-        console.log('[loadMeshFile] applied FBX unitScaleFactor:', autoScale);
-      }
-      // Apply user-specified scale (for FBX without proper UnitScaleFactor)
-      if (userScale !== 1) {
-        root.scale.setScalar(root.scale.x * userScale);
-        console.log('[loadMeshFile] applied user scale:', userScale);
-      }
-      // Выровнять: низ bounding box ровно на y=0 (пивот FBX часто в центре модели),
-      // геометрию центрировать по X/Z относительно сетки (иначе OBJ смещён от начала координат)
-      root.updateMatrixWorld(true);
-      const loadBox = new THREE.Box3().setFromObject(root);
-      if (isFinite(loadBox.min.y)) {
-        root.position.y -= loadBox.min.y;
-        const cx = (loadBox.min.x + loadBox.max.x) / 2;
-        const cz = (loadBox.min.z + loadBox.max.z) / 2;
-        root.position.x -= cx;
-        root.position.z -= cz;
-        console.log('[loadMeshFile] aligned min.y to 0 (was', loadBox.min.y.toFixed(4), '), centered X/Z (was', cx.toFixed(4), cz.toFixed(4), ')');
-      }
+      // Единицы — автоматически: FBX несёт их в файле, остальные форматы метрические.
+      const unitScale = unitsToMeters(root, ext);
+      console.log('[loadMeshFile] units: scale =', unitScale,
+        '(UnitScaleFactor:', root.userData?.unitScaleFactor ?? 'нет', ')');
+      normalizeImportedRoot(root, unitScale);
       let meshCount = 0;
       root.traverse((o) => {
         if (o.isMesh) {
@@ -612,9 +626,6 @@ const els = {
   clearLow: document.getElementById('clearLow'),
   clearHigh: document.getElementById('clearHigh'),
   clearTex: document.getElementById('clearTex'),
-  fbxScaleRow: document.getElementById('fbxScaleRow'),
-  fbxScale: document.getElementById('fbxScale'),
-  fbxScale_v: document.getElementById('fbxScale_v'),
   lowName: document.getElementById('lowName'),
   highName: document.getElementById('highName'),
   texName: document.getElementById('texName'),
@@ -677,11 +688,8 @@ function bindFile(input, label, emptyText, onChange) {
 }
 bindFile(els.fileLow, els.lowName, 'выбрать…', () => {
   const f = els.fileLow.files && els.fileLow.files[0];
-  const isFBX = f && f.name.toLowerCase().endsWith('.fbx');
-  if (els.fbxScaleRow) els.fbxScaleRow.hidden = !isFBX;
   if (f && currentRoom === 'bake') {
-    const scale = isFBX ? parseFloat(els.fbxScale?.value ?? '0.01') : 1;
-    loadMeshFile(f, scale).catch(e => els.status.textContent = 'Ошибка загрузки low-poly: ' + e);
+    loadMeshFile(f).catch(e => els.status.textContent = 'Ошибка загрузки low-poly: ' + e);
   }
 });
 bindFile(els.fileHigh, els.highName, 'выбрать…');
@@ -696,20 +704,6 @@ function clearFile(input, label, clearViewport = true) {
     setViewportRoot(null);
   }
 }
-
-function applyFbxScaleToRoot(scale) {
-  if (!currentRoot) return;
-  // Find the original scale (remove previous user scale)
-  const autoScale = currentRoot.userData?.unitScaleFactor ?? 1;
-  currentRoot.scale.setScalar(autoScale * scale);
-  console.log('[applyFbxScale] applied scale:', scale);
-  renderer.render(scene, camera);
-}
-
-els.fbxScale?.addEventListener('change', () => {
-  const scale = parseFloat(els.fbxScale.value);
-  applyFbxScaleToRoot(scale);
-});
 
 els.clearLow?.addEventListener('click', () => clearFile(els.fileLow, els.lowName));
 els.clearHigh?.addEventListener('click', () => clearFile(els.fileHigh, els.highName));
@@ -821,10 +815,6 @@ function bindDec(id, fmt) {
 bindDec('decRatio', (v) => v.toFixed(2));
 bindDec('decIter', (v) => String(v));
 bindDec('decAngle', (v) => v.toFixed(1));
-bindDec('fbxScale', (v) => {
-    const opt = els.fbxScale?.querySelector(`option[value="${v}"]`);
-    return opt ? opt.textContent : v;
-  });
 
 function updateBakeEnabled() {
   const ready = els.fileLow.files.length > 0 && els.fileHigh.files.length > 0;
@@ -1241,6 +1231,9 @@ async function doDecimate() {
         fixTextureColorSpace(root);
         ensureDefaultMaterial(root);
         normalizeImportedMaterials(root);
+        // Результат децимации приходит из Blender — он уже в метрах и Y-up.
+        // Выравниваем ровно как превью исходного файла (тот же scale=1, низ на y=0, центр X/Z).
+        normalizeImportedRoot(root, 1);
         if (info.polys_after != null) {
           root.userData.meshStats = { polys: info.polys_after, tris: info.tris_after, verts: info.verts_after };
         }
@@ -2233,14 +2226,13 @@ async function loadRigFile(file) {
   try {
     let root;
     let clips = [];
+    let unitScale = 1;
     if (ext === 'fbx') {
       root = await new FBXLoader().loadAsync(url);
-      // Apply FBX unit scale factor
-      const scale = root.userData?.unitScaleFactor ?? 1;
-      if (scale !== 1) {
-        root.scale.setScalar(scale);
-        console.log('[loadRigFile] applied FBX unitScaleFactor:', scale);
-      }
+      // Единицы FBX — автоматически: UnitScaleFactor = «сколько сантиметров в единице файла»,
+      // Blender импортирует такой файл с множителем U/100 (см. unitsToMeters).
+      unitScale = unitsToMeters(root, ext);
+      console.log('[loadRigFile] FBX unitScaleFactor:', root.userData?.unitScaleFactor, '→ scale', unitScale);
       clips = root.animations || [];
     } else {
       const gltf = await loader.loadAsync(url);
@@ -2262,7 +2254,9 @@ fixTextureColorSpace(root);
         console.log('[loadRigFile] new material:', o.material.type, 'color:', o.material.color.getHexString());
       }
     });
-normalizeImportedMaterials(root);
+    normalizeImportedMaterials(root);
+    // Та же нормализация, что и в остальных комнатах: метры, низ на y=0, центр по X/Z.
+    normalizeImportedRoot(root, unitScale);
     rigRoot = root;
     rigGroup.add(root);
     let meshCount = 0;
