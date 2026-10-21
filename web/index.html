@@ -113,6 +113,25 @@
   }
   button.clear:hover { background: #4a525c; color: #e6e8ea; }
 
+  .map-list { margin-top: 4px; }
+  .map-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .map-row:last-child { margin-bottom: 0; }
+  .map-check {
+    display: flex; align-items: center; gap: 6px;
+    width: 104px; flex-shrink: 0; font-size: 13px; cursor: pointer;
+  }
+  .map-check input[type=checkbox] {
+    width: 15px; height: 15px; flex-shrink: 0; accent-color: #2f7fd8; cursor: pointer;
+  }
+  .map-pick {
+    flex: 1; min-width: 0; text-align: right; font-size: 13px; cursor: pointer;
+    color: #6fb3ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    border-bottom: 1px dashed #3a3f46; padding: 3px 0;
+  }
+  .map-pick.empty { color: #6b727c; }
+  .map-pick input[type=file] { display: none; }
+  .box.disabled .box-body { opacity: .45; }
+
   #meshStats {
     position: absolute; top: 12px; left: 12px; z-index: 50;
     background: rgba(30, 33, 38, .92); border: 1px solid #33373d;
@@ -242,19 +261,16 @@
           </label>
           <button type="button" class="clear" id="clearHigh" title="Очистить high poly">×</button>
         </div>
-        <div class="file-row">
-          <label class="file">
-            <span>Base color</span>
-            <span class="pick empty" id="texName" data-empty="авто из high">авто из high</span>
-            <input type="file" id="fileTex" accept="image/*">
-          </label>
-          <button type="button" class="clear" id="clearTex" title="Очистить текстуру">×</button>
+
+        <div class="ctrl tight" data-tip="<b>Карты для перепечки.</b> Отметьте карты — они будут запечены в один прогон и повешены на меш во вьюпорте.<br>Источник карты: загруженный файл, иначе она автоматически подцепляется из high poly.<br>Данные карты (Normal, AO, Roughness, Metallic, Height) сохраняются без sRGB-преобразования.">
+          <label>карты <span class="val" id="mapsHint"></span></label>
         </div>
+        <div class="map-list" id="mapList"></div>
 
         <button id="bake" style="margin-top:14px">Перепечь</button>
         <div class="btn-row" style="margin-top:8px">
           <button id="adjSave" class="secondary">Сохранить PNG</button>
-          <button id="adjDownload" class="secondary">Скачать PNG</button>
+          <button id="mapsDownload" class="secondary">Скачать все карты</button>
         </div>
         <div class="btn-row" style="margin-top:8px">
           <button id="exportBakedGlb" class="secondary" disabled>Экспорт GLB (с текстурой)</button>
@@ -330,7 +346,7 @@
       </div>
     </details>
 
-    <details class="box" open>
+    <details class="box" open id="adjBox">
       <summary>Цветокоррекция base color</summary>
       <div class="box-body">
         <div class="ctrl tight" data-tip="<b>Яркость.</b> Прибавляет/убавляет значение ко всем каналам (−1…+1).">
@@ -388,7 +404,7 @@
       </div>
     </details>
 
-    <details class="box" open>
+    <details class="box" open id="basePreviewBox">
       <summary>Base color</summary>
       <div class="box-body">
         <div id="preview">
@@ -597,6 +613,6 @@
   }
 }
 </script>
-<script type="module" src="./app.js?v=20261021b"></script>
+<script type="module" src="./app.js?v=20261021c"></script>
 </body>
 </html>

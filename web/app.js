@@ -8,7 +8,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const view = document.getElementById('view');
 const appVerEl = document.getElementById('appVer');
-if (appVerEl) appVerEl.textContent = 'v20261021b';
+if (appVerEl) appVerEl.textContent = 'v20261021c';
 
 window.addEventListener('error', (e) => {
   const st = document.getElementById('status');
@@ -324,7 +324,7 @@ function setupTargets() {
     currentRoot.traverse((o) => {
       // __cage__ — debug-меш без UV: карта на общем cageMaterial даёт чёрный кейдж
       if (o.isMesh && o.name !== '__cage__' && o.material) {
-        o.material.map = procRT.texture;
+        o.material.map = bakedMaps.has('basecolor') ? procRT.texture : null;
         o.material.needsUpdate = true;
       }
     });
@@ -389,8 +389,78 @@ function loadTexture() {
       resolve();
     };
     img.onerror = () => resolve();
-    img.src = '/texture.png?v=' + (texVersion++);
+    img.src = '/texture/basecolor.png?v=' + (texVersion++);
   });
+}
+
+// Карта, кроме base color: обычный PNG с сервера, значения берутся как есть (NoColorSpace).
+function loadMapTexture(id) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const tex = new THREE.Texture(img);
+      tex.flipY = false;
+      tex.colorSpace = THREE.NoColorSpace;
+      tex.wrapS = THREE.ClampToEdgeWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.generateMipmaps = true;
+      tex.needsUpdate = true;
+      resolve(tex);
+    };
+    img.onerror = () => resolve(null);
+    img.src = '/texture/' + id + '.png?v=' + (texVersion++);
+  });
+}
+
+// На меш вешаются ТОЛЬКО карты последнего прогона.
+function assignMapsToRoot() {
+  if (!currentRoot) return;
+  currentRoot.traverse((o) => {
+    if (!o.isMesh || o.name === '__cage__' || !o.material) return;
+    const mat = o.material;
+    for (const m of BAKE_MAPS) {
+      if (m.slot in mat) mat[m.slot] = null;
+    }
+    if (bakedMaps.has('basecolor') && procRT) mat.map = procRT.texture;
+    for (const m of BAKE_MAPS) {
+      if (m.id === 'basecolor' || !bakedMaps.has(m.id)) continue;
+      const tex = mapTextures.get(m.id);
+      if (!tex) continue;
+      mat[m.slot] = tex;
+      // height — карта смещения: без масштаба меш деформируется, поэтому визуально нейтральна
+      if (m.slot === 'displacementMap') mat.displacementScale = 0;
+    }
+    mat.needsUpdate = true;
+  });
+}
+
+function updateBaseColorUi() {
+  // Цветокоррекция и превью относятся только к base color.
+  const on = !bakedMaps.size || bakedMaps.has('basecolor');
+  const adjBox = document.getElementById('adjBox');
+  if (adjBox) {
+    adjBox.classList.toggle('disabled', !on);
+    adjBox.querySelectorAll('input').forEach((el) => { el.disabled = !on; });
+  }
+  const prevBox = document.getElementById('basePreviewBox');
+  if (prevBox) prevBox.classList.toggle('disabled', !on);
+  if (els.adjSave) els.adjSave.disabled = !on;
+}
+
+async function applyBakedMaps(ids) {
+  bakedMaps = new Set(ids);
+  for (const m of BAKE_MAPS) {
+    if (m.id !== 'basecolor' && bakedMaps.has(m.id)) {
+      mapTextures.set(m.id, await loadMapTexture(m.id));
+    } else {
+      mapTextures.delete(m.id);
+    }
+  }
+  if (bakedMaps.has('basecolor')) await loadTexture();
+  assignMapsToRoot();
+  updateBaseColorUi();
 }
 
 // Считает полигоны/вершины из сырого OBJ (строка "f" = полигон, n вершин → n-2 треугольника).
@@ -494,7 +564,6 @@ function loadModel() {
           const mat = new THREE.MeshStandardMaterial({
             roughness: 0.85, metalness: 0.0, side: THREE.DoubleSide,
           });
-          if (procRT) mat.map = procRT.texture;
           o.material = mat;
         }
       });
@@ -575,7 +644,7 @@ function loadMeshFile(file) {
           const mat = new THREE.MeshStandardMaterial({
             roughness: 0.85, metalness: 0.0, side: THREE.DoubleSide,
           });
-          if (procRT) mat.map = procRT.texture;
+          if (procRT && bakedMaps.has('basecolor')) mat.map = procRT.texture;
           o.material = mat;
         }
       });
@@ -622,13 +691,10 @@ const els = {
   log: document.getElementById('log'),
   fileLow: document.getElementById('fileLow'),
   fileHigh: document.getElementById('fileHigh'),
-  fileTex: document.getElementById('fileTex'),
   clearLow: document.getElementById('clearLow'),
   clearHigh: document.getElementById('clearHigh'),
-  clearTex: document.getElementById('clearTex'),
   lowName: document.getElementById('lowName'),
   highName: document.getElementById('highName'),
-  texName: document.getElementById('texName'),
   gridToggle: document.getElementById('sceneGridToggle'),
   gridColor: document.getElementById('sceneGridColor'),
   wireToggle: document.getElementById('wireToggle'),
@@ -636,12 +702,83 @@ const els = {
   cageToggle: document.getElementById('cageToggle'),
   cageOpacity: document.getElementById('cageOpacity'),
   cageColor: document.getElementById('cageColor'),
-adjSave: document.getElementById('adjSave'),
-  adjDownload: document.getElementById('adjDownload'),
+  adjSave: document.getElementById('adjSave'),
   adjReset: document.getElementById('adjReset'),
+  mapsDownload: document.getElementById('mapsDownload'),
   exportBakedGlb: document.getElementById('exportBakedGlb'),
   exportBakedFbx: document.getElementById('exportBakedFbx'),
 };
+
+// --- Карты для перепечки ---
+// Слот в three.js + признак цветности. Данные карты (normal/ao/roughness/metallic/height)
+// грузятся как NoColorSpace: их значения — данные, а не цвет.
+const BAKE_MAPS = [
+  { id: 'basecolor', label: 'Base color', slot: 'map', srgb: true, def: true },
+  { id: 'normal', label: 'Normal', slot: 'normalMap' },
+  { id: 'ao', label: 'AO', slot: 'aoMap' },
+  { id: 'roughness', label: 'Roughness', slot: 'roughnessMap' },
+  { id: 'metallic', label: 'Metallic', slot: 'metalnessMap' },
+  { id: 'height', label: 'Height', slot: 'displacementMap' },
+];
+
+const mapFiles = {};            // id -> File (загруженная вручную карта)
+const mapTextures = new Map();  // id -> THREE.Texture (запечённая карта)
+let bakedMaps = new Set();      // id карт последнего прогона
+
+function selectedMaps() {
+  return BAKE_MAPS.filter((m) => {
+    const el = document.getElementById('chk_' + m.id);
+    return el && el.checked;
+  });
+}
+
+function updateMapsHint() {
+  const el = document.getElementById('mapsHint');
+  if (!el) return;
+  const n = selectedMaps().length;
+  el.textContent = n ? `выбрано: ${n}` : 'ничего не выбрано';
+}
+
+function buildMapList() {
+  const list = document.getElementById('mapList');
+  if (!list) return;
+  list.innerHTML = '';
+  for (const m of BAKE_MAPS) {
+    const row = document.createElement('div');
+    row.className = 'map-row';
+    row.innerHTML =
+      `<label class="map-check"><input type="checkbox" id="chk_${m.id}"${m.def ? ' checked' : ''}><span>${m.label}</span></label>` +
+      `<label class="map-pick"><span class="pick empty" id="name_${m.id}">авто из high</span>` +
+      `<input type="file" id="file_${m.id}" accept="image/*"></label>` +
+      `<button type="button" class="clear" id="clear_${m.id}" title="Очистить ${m.label}">×</button>`;
+    list.appendChild(row);
+    const input = row.querySelector('#file_' + m.id);
+    const name = row.querySelector('#name_' + m.id);
+    const chk = row.querySelector('#chk_' + m.id);
+    input.addEventListener('change', () => {
+      const f = input.files && input.files[0];
+      if (f) {
+        mapFiles[m.id] = f;
+        name.textContent = f.name;
+        name.classList.remove('empty');
+      } else {
+        delete mapFiles[m.id];
+        name.textContent = 'авто из high';
+        name.classList.add('empty');
+      }
+    });
+    chk.addEventListener('change', updateMapsHint);
+    row.querySelector('#clear_' + m.id).addEventListener('click', () => {
+      input.value = '';
+      delete mapFiles[m.id];
+      name.textContent = 'авто из high';
+      name.classList.add('empty');
+    });
+  }
+  updateMapsHint();
+}
+
+buildMapList();
 
 const elsD = {
   file: document.getElementById('decFile'),
@@ -693,7 +830,6 @@ bindFile(els.fileLow, els.lowName, 'выбрать…', () => {
   }
 });
 bindFile(els.fileHigh, els.highName, 'выбрать…');
-bindFile(els.fileTex, els.texName, 'авто из high');
 
 function clearFile(input, label, clearViewport = true) {
   input.value = '';
@@ -707,7 +843,6 @@ function clearFile(input, label, clearViewport = true) {
 
 els.clearLow?.addEventListener('click', () => clearFile(els.fileLow, els.lowName));
 els.clearHigh?.addEventListener('click', () => clearFile(els.fileHigh, els.highName));
-els.clearTex?.addEventListener('click', () => clearFile(els.fileTex, els.texName, false));
 bindFile(elsD.file, elsD.name, 'выбрать…', () => {
   const f = elsD.file.files && elsD.file.files[0];
   elsD.btn.disabled = !f;
@@ -972,32 +1107,53 @@ async function saveTexture() {
 
 els.adjSave.addEventListener('click', saveTexture);
 
-els.adjDownload.addEventListener('click', async () => {
-  els.adjDownload.disabled = true;
+async function fetchBlob(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return await r.blob();
+}
+
+// Одна кнопка на все запечённые карты: base color — с учётом цветокоррекции,
+// остальные — готовые PNG с сервера.
+els.mapsDownload?.addEventListener('click', async () => {
+  if (!bakedMaps.size) {
+    els.status.textContent = 'Нет запечённых карт — сначала нажмите «Перепечь»';
+    return;
+  }
+  els.mapsDownload.disabled = true;
   try {
-    const blob = await exportBlob();
-    if (!blob) throw new Error('нет текстуры');
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'basecolor.png';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    for (const m of BAKE_MAPS) {
+      if (!bakedMaps.has(m.id)) continue;
+      const blob = m.id === 'basecolor'
+        ? await exportBlob()
+        : await fetchBlob('/texture/' + m.id + '.png?v=' + (texVersion++));
+      if (!blob) throw new Error('нет карты ' + m.label);
+      downloadBlob(blob, m.id + '.png');
+      await new Promise((r) => setTimeout(r, 400));
+    }
     adjDirty = false;
+    els.status.textContent = 'Карты скачаны: ' + [...bakedMaps].join(', ');
   } catch (e) {
     els.status.textContent = 'Ошибка скачивания: ' + e;
   } finally {
-    els.adjDownload.disabled = false;
+    els.mapsDownload.disabled = false;
   }
 });
 
 async function bake() {
+  const maps = selectedMaps();
+  if (!maps.length) {
+    els.status.textContent = 'Выберите хотя бы одну карту для перепечки';
+    return;
+  }
   const fd = new FormData();
   fd.append('low', els.fileLow.files[0]);
   fd.append('high', els.fileHigh.files[0]);
-  if (els.fileTex.files.length) fd.append('texture', els.fileTex.files[0]);
+  for (const m of maps) {
+    const f = mapFiles[m.id];
+    if (f) fd.append('tex_' + m.id, f);
+  }
+  fd.append('maps', maps.map((m) => m.id).join(','));
   fd.append('cage_extrusion', els.cage.value);
   fd.append('max_ray_distance', els.ray.value);
   fd.append('margin', els.margin.value);
@@ -1008,17 +1164,18 @@ async function bake() {
   els.status.textContent = 'Загрузка и бейк…';
   const t0 = Date.now();
   const timer = setInterval(() => {
-    els.status.textContent = 'Печём… ' + ((Date.now() - t0) / 1000).toFixed(0) + ' с';
+    els.status.textContent = 'Печём ' + maps.map((m) => m.label).join(', ') + '… ' +
+      ((Date.now() - t0) / 1000).toFixed(0) + ' с';
   }, 500);
 
   try {
     const r = await fetch('/bake', { method: 'POST', body: fd });
     const data = await r.json();
     clearInterval(timer);
-if (data.ok) {
+    if (data.ok) {
       let meshCount = 0;
       try { meshCount = await loadModel(); } catch { /* ignore */ }
-      await loadTexture();
+      await applyBakedMaps(maps.map((m) => m.id));
       const info = data.info || {};
       if (currentRoot && info.low_stats) {
         currentRoot.userData.meshStats = info.low_stats;
@@ -1026,7 +1183,7 @@ if (data.ok) {
       }
       els.status.textContent =
         'Готово за ' + data.seconds + ' с · мешей: ' + meshCount +
-        (info.texture ? ' · текстура: ' + info.texture : '');
+        ' · карты: ' + maps.map((m) => m.label).join(', ');
       els.exportBakedGlb.disabled = false;
       els.exportBakedFbx.disabled = false;
     } else {

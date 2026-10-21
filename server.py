@@ -28,11 +28,14 @@ class BakeCfg(TypedDict):
     low: str
     high: str
     texture: str | None
+    maps: list[str]
+    textures: dict[str, str | None]
     cage_extrusion: float
     max_ray_distance: float
     margin: int
     resolution: int
     out_png: str
+    out_pngs: dict[str, str]
     out_glb: str
 
 
@@ -62,6 +65,8 @@ BAKE_SCRIPT = os.path.join(VIEWER, "bake_web.py")
 EXPORT_SCRIPT = os.path.join(VIEWER, "export_fbx.py")
 DECIMATE_SCRIPT = os.path.join(VIEWER, "decimate.py")
 OUT_TEX = os.path.join(BASE, "l_basecolor.png")
+MAP_IDS = ("basecolor", "normal", "ao", "roughness", "metallic", "height")
+OUT_MAPS = {mid: os.path.join(BASE, f"l_{mid}.png") for mid in MAP_IDS}
 OUT_GLB = os.path.join(WEB, "model.glb")
 PORT = int(os.environ.get("BAKE_PORT", "8765"))
 
@@ -126,14 +131,14 @@ def safe_name(name: str | None) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", os.path.basename(name or "file"))
 
 
-def save_upload(field: MultipartPart | None, dest_dir: str) -> str | None:
+def save_upload(field: MultipartPart | None, dest_dir: str, prefix: str = "") -> str | None:
     if not field or not field.get("data"):
         return None
     data = field["data"]
     if data is None:
         return None
     fn = safe_name(field.get("filename") or "upload.bin")
-    path = os.path.join(dest_dir, fn)
+    path = os.path.join(dest_dir, prefix + fn)
     with open(path, "wb") as f:
         f.write(data)
     return path
@@ -179,6 +184,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path == "/texture.png":
             return self.serve_file(OUT_TEX, "image/png")
+        if path.startswith("/texture/"):
+            name = path[len("/texture/"):]
+            if name.endswith(".png"):
+                name = name[:-4]
+            if name not in OUT_MAPS:
+                return self.send_error(404)
+            return self.serve_file(OUT_MAPS[name], "image/png")
         if path == "/decimated.glb":
             return self.serve_file(os.path.join(UPLOADS, "_decimate.glb"), "model/gltf-binary")
         if path == "/decimated.obj":
@@ -353,6 +365,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         finally:
             bake_lock.release()
 
+    def collect_map_textures(self, parts: dict[str, MultipartPart],
+                             maps: list[str]) -> dict[str, str | None]:
+        """Файлы карт: tex_<id> на каждую карту (префикс — чтобы имена не слипались)."""
+        out: dict[str, str | None] = {}
+        for mid in maps:
+            path = save_upload(parts.get("tex_" + mid), UPLOADS, prefix=f"map_{mid}_")
+            if path is None and mid == "basecolor":
+                path = save_upload(parts.get("texture"), UPLOADS)
+            out[mid] = path
+        return out
+
     def run_bake(self, body: bytes, ctype: str) -> None:
         m = re.search(r"boundary=([^;]+)", ctype)
         if not m:
@@ -362,20 +385,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         low = save_upload(parts.get("low"), UPLOADS)
         high = save_upload(parts.get("high"), UPLOADS)
-        texture = save_upload(parts.get("texture"), UPLOADS)
 
         if not low or not high:
             return self.reply(400, {"ok": False, "error": "нужны файлы low и high"})
 
-        cfg = {
+        maps = [m.strip() for m in part_field(parts, "maps", "").split(",") if m.strip() in MAP_IDS]
+        if not maps:
+            maps = ["basecolor"]
+        textures = self.collect_map_textures(parts, maps)
+
+        cfg: BakeCfg = {
             "low": low,
             "high": high,
-            "texture": texture,
+            "texture": textures.get("basecolor"),
+            "maps": maps,
+            "textures": textures,
             "cage_extrusion": float(part_field(parts, "cage_extrusion", "0.008")),
             "max_ray_distance": float(part_field(parts, "max_ray_distance", "0.012")),
             "margin": int(float(part_field(parts, "margin", "32"))),
             "resolution": int(float(part_field(parts, "resolution", "4096"))),
             "out_png": OUT_TEX,
+            "out_pngs": {mid: OUT_MAPS[mid] for mid in maps},
             "out_glb": OUT_GLB,
         }
 
